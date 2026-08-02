@@ -1,7 +1,7 @@
  {
-  "name": "nstad-quiz-backend",
+  "name": "trivia-quiz-backend",
   "version": "1.0.0",
-  "description": "NSTAD Online Quiz backend with registration, MCQ, and results.",
+  "description": "Backend for a trivia quiz application with registration, MCQ, and results.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -23,5 +23,7 @@
   "devDependencies": {
     "nodemon": "^3.1.4"
   },
+  "keywords": ["quiz", "trivia", "mcq", "exam", "nodejs", "express", "mongodb"],
+  "author": "Your Name",
   "license": "MIT"
 }
