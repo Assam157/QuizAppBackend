@@ -541,12 +541,24 @@ app.get("/registration-config", async (req, res) => {
 
     await rebuildRegistrationCsv(quizName);
 
-    // ========== PDF GENERATION (fixed) ==========
+    // ========== PDF GENERATION (buffered) ==========
     const doc = new PDFDocument({ size: "A4", margin: 50 });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
-    doc.pipe(res);
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {
+      const pdfData = Buffer.concat(buffers);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=reg-${regNo}.pdf`);
+      res.send(pdfData);
+    });
+    doc.on('error', (err) => {
+      console.error("PDF generation error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: "PDF generation failed" });
+      }
+    });
 
+    // ---- Background ----
     const bgPath = path.join(__dirname, "assets", "image.png");
     if (fs.existsSync(bgPath)) {
       doc.image(bgPath, 0, 0, { width: doc.page.width, height: doc.page.height });
@@ -557,7 +569,7 @@ app.get("/registration-config", async (req, res) => {
     const pageWidth = doc.page.width;
     const centerX = pageWidth / 2;
 
-    // Header
+    // ---- Header ----
     doc.fontSize(28)
        .fillColor("#1a237e")
        .font("Helvetica-Bold")
@@ -570,7 +582,7 @@ app.get("/registration-config", async (req, res) => {
        .text("Registration Confirmation", centerX, 130, { align: "center" })
        .moveDown(1);
 
-    // Card with student details
+    // ---- Student details card ----
     const cardX = 80;
     const cardY = 180;
     const cardWidth = pageWidth - 160;
@@ -630,9 +642,8 @@ app.get("/registration-config", async (req, res) => {
     doc.text("Quiz Date & Time (IST):", leftCol, yPos);
     doc.font("Helvetica").fillColor(valueColor);
     doc.text(startStr, rightCol, yPos);
-    yPos += 30;
 
-    // ========== RULES SECTION (FIXED LOOP) ==========
+    // ---- Rules & Regulations (flowing, no one‑line‑per‑page) ----
     const rulesY = cardY + cardHeight + 40;
     doc.fontSize(16)
        .fillColor("#1a237e")
@@ -643,11 +654,10 @@ app.get("/registration-config", async (req, res) => {
     const ruleFontSize = 11;
     const ruleColor = "#37474f";
     const bulletX = 70;
-    // Start positioning from after the heading
-    let currentY = doc.y + 10;  // small gap after heading
-    const pageWidthForText = pageWidth - 140;
+    // Safe width for text
+    let textWidth = pageWidth - 140;
+    if (isNaN(textWidth) || textWidth <= 0) textWidth = 400; // fallback
 
-    // The rules array (unchanged)
     const rules = [
       "The National Science and Technology Digital Archive (NSTAD) invites students from standard XI to undergraduate any stream to participate in this online quiz celebrating the life, work, and scientific legacy of Acharya Prafulla Chandra Ray, one of India's greatest chemists and pioneers of modern scientific research.",
       "",
@@ -690,15 +700,13 @@ app.get("/registration-config", async (req, res) => {
       "Explore the National Science and Technology Digital Archive and discover the remarkable scientific contributions of Acharya Prafulla Chandra Ray before taking the quiz. Visit: www.nstad.in"
     ];
 
-    // Iterate through each rule and draw it with automatic positioning
+    // Loop through each rule and draw with automatic positioning
     rules.forEach((rule) => {
-      // Skip empty lines but add a small gap
       if (rule.trim() === "") {
         doc.moveDown(0.5);
         return;
       }
 
-      // Determine prefix and font style
       let prefix = "• ";
       let text = rule;
       let isHeading = false;
@@ -714,10 +722,9 @@ app.get("/registration-config", async (req, res) => {
         text = rule.substring(1).trim();
       } else if (/^[A-Za-z\s]+:/.test(rule)) {
         isHeading = true;
-        text = rule; // keep as is
+        text = rule;
       }
 
-      // Set font based on heading or regular
       if (isHeading) {
         doc.font("Helvetica-Bold")
            .fillColor("#1a237e")
@@ -728,116 +735,27 @@ app.get("/registration-config", async (req, res) => {
            .fontSize(ruleFontSize);
       }
 
-      // Build content string
       const content = isHeading ? text : prefix + text;
-
-      // Draw text at current cursor position (doc.y)
-      doc.text(content, bulletX, { width: pageWidthForText, align: 'left' });
-
-      // Add a small gap after each line (except maybe headings)
+      // Draw at current cursor position
+      doc.text(content, bulletX, { width: textWidth, align: 'left' });
+      // Small gap after each item
       doc.moveDown(0.2);
     });
 
-    // Footer
+    // ---- Footer ----
     const footerY = doc.page.height - 40;
     doc.fontSize(10)
        .fillColor("#78909c")
        .text("Generated by NSTAD Online Quiz System", centerX, footerY, { align: "center" });
 
+    // Finalize PDF
     doc.end();
 
   } catch (err) {
     console.error("Registration error:", err);
-    res.status(500).json({ success: false, message: "Registration failed" });
-  }
-});
-
-// ---------- Download questions CSV ----------
-app.get("/questions-csv", async (req, res) => {
-  try {
-    const questions = await Question.find().sort({ createdAt: 1 }).lean();
-    if (questions.length === 0) {
-      return res.status(404).json({ success: false, message: "No questions found." });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: "Registration failed" });
     }
-
-    const records = questions.map(q => ({
-      question: q.question,
-      optionA: q.options.A,
-      optionB: q.options.B,
-      optionC: q.options.C,
-      optionD: q.options.D,
-      correctAnswer: q.correctAnswer,
-      imageUrl: q.imageUrl || "",
-      published: q.published ? "Yes" : "No",
-      createdAt: q.createdAt ? q.createdAt.toISOString() : "",
-    }));
-
-    const csvPath = path.join(resultsDir, `questions_${Date.now()}.csv`);
-    const writer = createObjectCsvWriter({
-      path: csvPath,
-      header: [
-        { id: "question", title: "Question" },
-        { id: "optionA", title: "Option A" },
-        { id: "optionB", title: "Option B" },
-        { id: "optionC", title: "Option C" },
-        { id: "optionD", title: "Option D" },
-        { id: "correctAnswer", title: "Correct Answer" },
-        { id: "imageUrl", title: "Image URL" },
-        { id: "published", title: "Published" },
-        { id: "createdAt", title: "Created At" },
-      ],
-      append: false,
-    });
-    await writer.writeRecords(records);
-
-    const downloadName = `questions_${new Date().toISOString().slice(0,10)}.csv`;
-    res.download(csvPath, downloadName, (err) => {
-      if (err) console.error("Download error:", err);
-      fs.unlink(csvPath, (unlinkErr) => {
-        if (unlinkErr) console.error("Failed to delete temp CSV:", unlinkErr);
-      });
-    });
-  } catch (err) {
-    console.error("Questions CSV error:", err);
-    res.status(500).json({ success: false, message: "Server error: " + err.message });
-  }
-});
-
-// ---------- Login ----------
-app.post("/login", async (req, res) => {
-  try {
-    const { regNo, email } = req.body;
-    if (!regNo || !email) {
-      return res.status(400).json({ success: false, message: "Registration number and email are required." });
-    }
-
-    const student = await Student.findOne({ regNo });
-    if (!student) {
-      return res.status(404).json({ success: false, message: "Invalid registration number." });
-    }
-
-    const storedEmail = student.customData.get('email');
-    if (!storedEmail || storedEmail.toLowerCase() !== email.toLowerCase()) {
-      return res.status(401).json({ success: false, message: "Email does not match our records." });
-    }
-
-    const existing = await QuizAttempt.findOne({ studentRegNo: regNo, submitted: true });
-    if (existing) {
-      return res.status(403).json({ success: false, message: "You have already submitted the quiz." });
-    }
-
-    const config = await getExamConfig();
-    res.json({
-      success: true,
-      student: { regNo: student.regNo, customData: Object.fromEntries(student.customData || new Map()) },
-      examStartTime: config.startTime,
-      examDuration: config.durationMinutes,
-      positiveMarks: config.positiveMarks,
-      negativeMarks: config.negativeMarks,
-    });
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ success: false, message: "Login failed." });
   }
 });
 
