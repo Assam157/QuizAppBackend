@@ -1,4 +1,4 @@
-require("dotenv").config();
+ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 const { createObjectCsvWriter } = require("csv-writer");
+const archiver = require("archiver");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -70,9 +71,9 @@ const quizAttemptSchema = new mongoose.Schema({
   totalMarksObtained: { type: Number, default: null },
   totalMarks: { type: Number, default: null },
   totalTimeMinutes: { type: Number, default: null },
-  durationMinutes: { type: Number, default: 25 },   // updated default
+  durationMinutes: { type: Number, default: 25 },
   positiveMarks: { type: Number, default: 1 },
-  negativeMarks: { type: Number, default: 1 },      // updated default
+  negativeMarks: { type: Number, default: 1 },
   disqualified: { type: Boolean, default: false },
   submitted: { type: Boolean, default: false },
   rank: { type: Number, default: null },
@@ -322,7 +323,7 @@ async function finalizeRanks() {
   try {
     console.log("⏳ Finalising ranks...");
     const config = await getExamConfig();
-    const quizName = config.quizName || "Trivia Quiz";
+    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
 
     const attempts = await QuizAttempt.find({ submitted: true, quizName }).lean();
     const nonDisqualified = attempts
@@ -381,6 +382,46 @@ function startRankWatcher() {
       console.error("Watcher error:", err);
     }
   }, 30000);
+}
+
+// ============ NEW: Generate Questions CSV string ============
+async function getQuestionsCsvString() {
+  const questions = await Question.find().sort({ createdAt: 1 }).lean();
+  if (questions.length === 0) return '';
+  const records = questions.map(q => ({
+    question: q.question,
+    optionA: q.options.A,
+    optionB: q.options.B,
+    optionC: q.options.C,
+    optionD: q.options.D,
+    correctAnswer: q.correctAnswer,
+    imageUrl: q.imageUrl || '',
+    published: q.published ? 'Yes' : 'No',
+    createdAt: q.createdAt ? q.createdAt.toISOString() : '',
+  }));
+  const header = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Image URL', 'Published', 'Created At'];
+  const rows = records.map(r => [
+    r.question,
+    r.optionA,
+    r.optionB,
+    r.optionC,
+    r.optionD,
+    r.correctAnswer,
+    r.imageUrl,
+    r.published,
+    r.createdAt
+  ]);
+  const csvLines = [header.join(',')];
+  rows.forEach(row => {
+    const escaped = row.map(field => {
+      if (typeof field === 'string' && (field.includes(',') || field.includes('"') || field.includes('\n'))) {
+        return `"${field.replace(/"/g, '""')}"`;
+      }
+      return field;
+    });
+    csvLines.push(escaped.join(','));
+  });
+  return csvLines.join('\n');
 }
 
 // ============ ROUTES ============
@@ -506,7 +547,6 @@ app.post("/register", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
     doc.pipe(res);
 
-    // ---- Background image (optional) ----
     const bgPath = path.join(__dirname, "assets", "image.png");
     if (fs.existsSync(bgPath)) {
       doc.image(bgPath, 0, 0, { width: doc.page.width, height: doc.page.height });
@@ -517,21 +557,18 @@ app.post("/register", async (req, res) => {
     const pageWidth = doc.page.width;
     const centerX = pageWidth / 2;
 
-    // --- Quiz Name ---
     doc.fontSize(28)
        .fillColor("#1a237e")
        .font("Helvetica-Bold")
        .text(config.quizName, centerX, 80, { align: "center" })
        .moveDown(0.5);
 
-    // --- Subtitle ---
     doc.fontSize(18)
        .fillColor("#303f9f")
        .font("Helvetica")
        .text("Registration Confirmation", centerX, 130, { align: "center" })
        .moveDown(1);
 
-    // --- Registration Card ---
     const cardX = 80;
     const cardY = 180;
     const cardWidth = pageWidth - 160;
@@ -586,7 +623,6 @@ app.post("/register", async (req, res) => {
       }
     }
 
-    // --- Quiz Date & Time ---
     const startStr = config.startTime.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
     doc.font("Helvetica-Bold").fillColor(labelColor);
     doc.text("Quiz Date & Time (IST):", leftCol, yPos);
@@ -594,7 +630,6 @@ app.post("/register", async (req, res) => {
     doc.text(startStr, rightCol, yPos);
     yPos += 30;
 
-    // ========== NEW NSTAD RULES SECTION ==========
     const rulesY = cardY + cardHeight + 40;
     doc.fontSize(16)
        .fillColor("#1a237e")
@@ -607,7 +642,6 @@ app.post("/register", async (req, res) => {
     const bulletX = 70;
     let rulesYPos = rulesY + 40;
 
-    // Full NSTAD rules text (as provided)
     const rules = [
       "The National Science and Technology Digital Archive (NSTAD) invites students from standard XI to undergraduate any stream to participate in this online quiz celebrating the life, work, and scientific legacy of Acharya Prafulla Chandra Ray, one of India's greatest chemists and pioneers of modern scientific research.",
       "",
@@ -654,18 +688,12 @@ app.post("/register", async (req, res) => {
        .fillColor(ruleColor)
        .font("Helvetica");
 
-    // Render rules with proper line breaks and indentation
     rules.forEach((rule, i) => {
       const y = rulesYPos + i * 18;
       if (rule.trim() === "") {
-        // skip empty lines but add some spacing by adjusting y
-        // We'll just add a blank line by incrementing y manually later
-        // Actually we will just render the text, if empty we skip drawing but keep line spacing
-        // We'll adjust by adding a small gap
-        rulesYPos += 18; // add a blank line
+        rulesYPos += 18;
         return;
       }
-      // If rule starts with "✔" or "⮚" or "•" treat as bullet
       let prefix = "• ";
       let text = rule;
       if (rule.startsWith("✔")) {
@@ -678,10 +706,8 @@ app.post("/register", async (req, res) => {
         prefix = "• ";
         text = rule.substring(1).trim();
       }
-      // Check if it's a heading (like "Eligibility:" or "Quiz Format:")
       const isHeading = rule.match(/^[A-Za-z\s]+:/);
       if (isHeading) {
-        // Make it bold and slightly larger
         doc.font("Helvetica-Bold").fillColor("#1a237e").fontSize(ruleFontSize + 1);
         doc.text(text, bulletX, y, { width: pageWidth - 140 });
         doc.font("Helvetica").fillColor(ruleColor).fontSize(ruleFontSize);
@@ -691,7 +717,6 @@ app.post("/register", async (req, res) => {
       rulesYPos += 18;
     });
 
-    // ---- Footer ----
     const footerY = doc.page.height - 40;
     doc.fontSize(10)
        .fillColor("#78909c")
@@ -958,12 +983,12 @@ app.post("/admin/archive-and-clear", async (req, res) => {
   }
 });
 
-// ---------- Reset exam (with versioning) ----------
+// ---------- Reset exam (with versioning and auto‑download ZIP) ----------
 app.post("/admin/reset-exam", async (req, res) => {
   try {
+    // 1. Get current config (or create default)
     let config = await ExamConfig.findOne();
     if (!config) {
-      console.log("⚠️ No config found – creating a default one.");
       config = new ExamConfig({
         quizName: "National Science and Technology Digital Archive (NSTAD) Online Quiz",
         startTime: new Date(Date.now() + 5 * 60000),
@@ -979,9 +1004,25 @@ app.post("/admin/reset-exam", async (req, res) => {
     const oldQuizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
     console.log(`🔄 Resetting exam for quiz: "${oldQuizName}"`);
 
-    const studentDeleteResult = await Student.deleteMany({ quizName: oldQuizName });
-    const attemptDeleteResult = await QuizAttempt.deleteMany({ quizName: oldQuizName });
-    console.log(`🗑️ Deleted ${studentDeleteResult.deletedCount} students and ${attemptDeleteResult.deletedCount} attempts.`);
+    // ---- Gather current CSV data before any deletion ----
+    let resultsCsv = '';
+    const resultsPath = getCsvPath(oldQuizName);
+    if (fs.existsSync(resultsPath)) {
+      resultsCsv = fs.readFileSync(resultsPath, 'utf8');
+    }
+
+    let registrationsCsv = '';
+    const registrationsPath = getRegistrationCsvPath(oldQuizName);
+    if (fs.existsSync(registrationsPath)) {
+      registrationsCsv = fs.readFileSync(registrationsPath, 'utf8');
+    }
+
+    const questionsCsv = await getQuestionsCsvString();
+
+    // ---- Perform reset operations ----
+    await Student.deleteMany({ quizName: oldQuizName });
+    await QuizAttempt.deleteMany({ quizName: oldQuizName });
+    console.log(`🗑️ Deleted students and attempts for "${oldQuizName}".`);
 
     const newVersion = (config.quizVersion || 1) + 1;
     config.quizVersion = newVersion;
@@ -1007,20 +1048,39 @@ app.post("/admin/reset-exam", async (req, res) => {
     }
     await config.save();
 
+    // Rebuild CSVs (empty)
     await rebuildCsv(config.quizName);
     await rebuildRegistrationCsv(config.quizName);
 
+    // Restart watcher
     startRankWatcher();
 
-    res.json({
-      success: true,
-      message: `Exam reset. New version: ${newVersion}. New start time: ${newStart.toISOString()}`,
-      startTime: newStart,
-      quizVersion: newVersion,
-    });
+    // ---- Send ZIP archive with the three CSV files ----
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeName = oldQuizName.replace(/[^a-zA-Z0-9-_]/g, '_');
+    const zipName = `backup_${safeName}_${timestamp}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+    archive.pipe(res);
+
+    // Append the CSV data
+    archive.append(resultsCsv, { name: 'results.csv' });
+    archive.append(registrationsCsv, { name: 'registrations.csv' });
+    archive.append(questionsCsv, { name: 'questions.csv' });
+
+    await archive.finalize();
+
   } catch (err) {
     console.error("❌ Reset exam error:", err);
-    res.status(500).json({ success: false, message: err.message });
+    // If we haven't sent headers yet, send JSON error
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: err.message });
+    } else {
+      // If headers already sent, we can only close the connection
+      res.end();
+    }
   }
 });
 
