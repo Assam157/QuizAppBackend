@@ -541,8 +541,8 @@ app.get("/registration-config", async (req, res) => {
 
     await rebuildRegistrationCsv(quizName);
 
-    // ========== PDF GENERATION (simple, no width) ==========
-    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    // ========== PDF GENERATION (page break after each rule) ==========
+    const doc = new PDFDocument({ size: "A4", margin: 0 });
     const buffers = [];
     doc.on('data', buffers.push.bind(buffers));
     doc.on('end', () => {
@@ -552,150 +552,195 @@ app.get("/registration-config", async (req, res) => {
       res.send(pdfData);
     });
     doc.on('error', (err) => {
-      console.error("PDF generation error:", err);
+      console.error("PDF error:", err);
       if (!res.headersSent) {
         res.status(500).json({ success: false, message: "PDF generation failed" });
       }
     });
 
-    // ---- Background ----
+    // ---- Fixed dimensions ----
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+
+    // ---- Background image ----
     const bgPath = path.join(__dirname, "assets", "image.png");
     if (fs.existsSync(bgPath)) {
-      doc.image(bgPath, 0, 0, { width: doc.page.width, height: doc.page.height });
+      doc.image(bgPath, 0, 0, { width: pageWidth, height: pageHeight });
     } else {
-      doc.rect(0, 0, doc.page.width, doc.page.height).fill("#f8f9fa");
+      doc.rect(0, 0, pageWidth, pageHeight).fill('#f8f9fa');
     }
 
-    const pageWidth = doc.page.width || 595.28; // fallback
-    const centerX = pageWidth / 2;
-
-    // ---- Header ----
-    doc.fontSize(28)
-       .fillColor("#1a237e")
-       .font("Helvetica-Bold")
-       .text(config.quizName, centerX, 80, { align: "center" })
-       .moveDown(0.5);
-
-    doc.fontSize(18)
-       .fillColor("#303f9f")
-       .font("Helvetica")
-       .text("Registration Confirmation", centerX, 130, { align: "center" })
-       .moveDown(1);
-
-    // ---- Student details card ----
+    // ---- Card rectangle ----
     const cardX = 80;
-    const cardY = 180;
+    const cardY = 150;
     const cardWidth = pageWidth - 160;
-    const cardHeight = 260;
-
-    doc.fillColor("#ffffff")
-       .fillOpacity(0.85)
+    const cardHeight = 250;
+    doc.fillColor('#ffffff')
+       .fillOpacity(0.9)
        .rect(cardX, cardY, cardWidth, cardHeight)
        .fill()
        .fillOpacity(1)
-       .strokeColor("#b0bec5")
+       .strokeColor('#b0bec5')
        .lineWidth(1)
        .rect(cardX, cardY, cardWidth, cardHeight)
        .stroke();
 
-    let yPos = cardY + 30;
-    const leftCol = cardX + 30;
-    const rightCol = cardX + 200;
-
-    const detailFontSize = 13;
-    const labelColor = "#455a64";
-    const valueColor = "#1e293b";
-
-    doc.fontSize(detailFontSize).font("Helvetica-Bold").fillColor(labelColor);
-    doc.text("Registration No:", leftCol, yPos);
-    doc.font("Helvetica").fillColor(valueColor);
-    doc.text(regNo, rightCol, yPos);
-    yPos += 30;
-
-    doc.font("Helvetica-Bold").fillColor(labelColor);
-    doc.text("Name:", leftCol, yPos);
-    doc.font("Helvetica").fillColor(valueColor);
-    doc.text(name, rightCol, yPos);
-    yPos += 30;
-
-    doc.font("Helvetica-Bold").fillColor(labelColor);
-    doc.text("Email:", leftCol, yPos);
-    doc.font("Helvetica").fillColor(valueColor);
-    doc.text(email, rightCol, yPos);
-    yPos += 30;
-
-    for (const [fieldName, settings] of Object.entries(extraFields)) {
-      if (!settings.enabled) continue;
-      const value = customData.get(fieldName) || "";
-      if (value) {
-        const label = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
-        doc.font("Helvetica-Bold").fillColor(labelColor);
-        doc.text(label + ":", leftCol, yPos);
-        doc.font("Helvetica").fillColor(valueColor);
-        doc.text(value, rightCol, yPos);
-        yPos += 30;
-      }
+    // ---- Helper to print text at a given position (no width option) ----
+    function printAt(text, x, y, fontSize = 11, font = 'Helvetica', color = '#000000') {
+      if (!text) return y;
+      doc.fontSize(fontSize).font(font).fillColor(color);
+      doc.text(text, x, y);  // no width or align – just raw
+      return doc.y + 4;
     }
 
-    const startStr = config.startTime.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-    doc.font("Helvetica-Bold").fillColor(labelColor);
-    doc.text("Quiz Date & Time (IST):", leftCol, yPos);
-    doc.font("Helvetica").fillColor(valueColor);
-    doc.text(startStr, rightCol, yPos);
+    // ---- Header ----
+    doc.fontSize(24).font('Helvetica-Bold').fillColor('#1a237e');
+    const title = config.quizName;
+    const titleWidth = doc.widthOfString(title);
+    doc.text(title, (pageWidth - titleWidth) / 2, 40);
 
-    // ---- Rules & Regulations (manual y, no width) ----
-    const rulesY = cardY + cardHeight + 40;
-    doc.fontSize(16)
-       .fillColor("#1a237e")
-       .font("Helvetica-Bold")
-       .text("Rules & Regulations", centerX, rulesY, { align: "center" });
+    doc.fontSize(16).font('Helvetica').fillColor('#303f9f');
+    const sub = 'Registration Confirmation';
+    const subWidth = doc.widthOfString(sub);
+    doc.text(sub, (pageWidth - subWidth) / 2, 80);
 
-    // Start from after the heading
-    let currentY = doc.y + 20; // small gap
-    const lineHeight = 16; // fixed height per rule
-    const maxPageHeight = doc.page.height - 80; // bottom margin
+    // ---- Student details (inside card) ----
+    let yPos = cardY + 30;
+    const leftCol = cardX + 20;
+    const rightCol = cardX + 180;
+    const labelColor = '#455a64';
+    const valueColor = '#1e293b';
 
-    // Rules array (shortened for brevity, but you can keep the full one)
+    function printField(label, value) {
+      doc.fontSize(12).font('Helvetica-Bold').fillColor(labelColor);
+      doc.text(label + ':', leftCol, yPos);
+      doc.font('Helvetica').fillColor(valueColor);
+      doc.text(value, rightCol, yPos);
+      yPos += 30;
+    }
+
+    printField('Registration No', regNo);
+    printField('Name', name);
+    printField('Email', email);
+    for (const [fieldName, settings] of Object.entries(extraFields)) {
+      if (!settings.enabled) continue;
+      const value = customData.get(fieldName) || '';
+      if (value) {
+        const label = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
+        printField(label, value);
+      }
+    }
+    const startStr = config.startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    printField('Quiz Date & Time (IST)', startStr);
+
+    // ---- Rules section: heading on first page ----
+    let rulesY = cardY + cardHeight + 40;
+    doc.fontSize(16).font('Helvetica-Bold').fillColor('#1a237e');
+    const heading = 'Rules & Regulations';
+    const headingWidth = doc.widthOfString(heading);
+    doc.text(heading, (pageWidth - headingWidth) / 2, rulesY);
+    rulesY += 30;
+
+    // ---- Rules array (same as before) ----
     const rules = [
-      "The National Science and Technology Digital Archive (NSTAD) invites students...",
-      // ... (all the rules) - same as before
+      "The National Science and Technology Digital Archive (NSTAD) invites students from standard XI to undergraduate any stream to participate in this online quiz celebrating the life, work, and scientific legacy of Acharya Prafulla Chandra Ray, one of India's greatest chemists and pioneers of modern scientific research.",
+      "",
+      "Eligibility:",
+      "✔ The quiz is open to students of Class XI, Class XII, and Undergraduates from any recognized school, college, or university.",
+      "✔ Participation is free of cost.",
+      "✔ Each participant is permitted to submit only one entry. Multiple submissions by the same participant may lead to disqualification.",
+      "",
+      "Quiz Format:",
+      "The quiz consists of multiple-choice questions (MCQs) based on the archival documents related to Acharya Prafulla Chandra Ray.",
+      "Participants are encouraged to explore the collections of scientists pages available on www.nstad.in before attempting the quiz.",
+      "",
+      "Submission Guidelines:",
+      `The quiz will be available on ${startStr} and will close at ${new Date(config.startTime.getTime() + config.durationMinutes * 60000).toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}.`,
+      "Responses submitted after the closing time will not be considered.",
+      "Once submitted, responses cannot be edited or resubmitted.",
+      "",
+      "Time:",
+      `Total 25 multiple choice questions will appear one by one. Duration is ${config.durationMinutes} minutes; the quiz will automatically close at the scheduled time.`,
+      "",
+      "Evaluation:",
+      "⮚ Each correct answer carries One mark.",
+      "⮚ There is negative marking. One mark will be deducted for 1 wrong answer.",
+      "⮚ In the event of a tie, participants who submitted their entries earlier will be given preference. If required, the organizing committee may apply additional tie-breaking criteria.",
+      "",
+      "Fair Participation:",
+      "Participants should answer the questions independently.",
+      "The use of unfair means or submission of multiple entries by the same participant may lead to disqualification.",
+      "The organizers reserve the right to verify participant details before announcing the results.",
+      "",
+      "Results:",
+      "Winners will be selected based on the highest scores in accordance with the quiz rules. In case of equal marks, response time will be considered. The fastest response will be declared the winner.",
+      "The decision of the organizing committee shall be final and binding in all matters related to the quiz.",
+      "",
+      "Disclaimer:",
+      "By participating, entrants agree to abide by these Rules & Regulations.",
+      "Organisers will not be responsible for poor internet connectivity at user end. No extension of time will be allowed for any cause whatsoever.",
+      "The organizers reserve the right to modify, postpone, or cancel the quiz under unforeseen circumstances without prior notice.",
+      "",
+      "Explore the National Science and Technology Digital Archive and discover the remarkable scientific contributions of Acharya Prafulla Chandra Ray before taking the quiz. Visit: www.nstad.in"
     ];
 
-    // Loop without any width option
-    rules.forEach((rule) => {
-      if (rule.trim() === "") {
-        currentY += lineHeight;
-        return;
-      }
-
-      // Check if we need a new page
-      if (currentY > maxPageHeight) {
+    // ---- Loop: each rule on a new page (except the first rule) ----
+    // We'll start on the current page with the heading, then for each rule,
+    // we add a new page, then draw the rule.
+    // But the first rule should be on the same page as the heading.
+    // We'll do: for each rule, if it's the first, print on current page; otherwise add page.
+    rules.forEach((rule, index) => {
+      // If not the first rule, add a new page
+      if (index > 0) {
         doc.addPage();
-        currentY = 50; // top margin
-      }
-
-      // Decide font style
-      let isHeading = /^[A-Za-z\s]+:/.test(rule);
-      if (isHeading) {
-        doc.font("Helvetica-Bold")
-           .fillColor("#1a237e")
-           .fontSize(12);
+        // Re-add the background image on the new page
+        if (fs.existsSync(bgPath)) {
+          doc.image(bgPath, 0, 0, { width: pageWidth, height: pageHeight });
+        } else {
+          doc.rect(0, 0, pageWidth, pageHeight).fill('#f8f9fa');
+        }
+        // Reset y to top margin
+        rulesY = 50;
       } else {
-        doc.font("Helvetica")
-           .fillColor("#37474f")
-           .fontSize(11);
+        // First rule: continue from where we left off (after heading)
+        // But heading is already printed, so we just use current y (which is rulesY)
+        // We'll set rulesY to current doc.y (it was updated after heading)
+        rulesY = doc.y + 10; // small gap after heading
       }
 
-      // Write text at fixed x=70, y=currentY
-      doc.text(rule, 70, currentY);
-      currentY += lineHeight;
+      // Determine styling
+      const isHeading = /^[A-Za-z\s]+:/.test(rule);
+      const isBullet = /^[✔⮚•]/.test(rule);
+      let prefix = '';
+      let text = rule;
+      if (isBullet) {
+        prefix = rule.charAt(0) + ' ';
+        text = rule.substring(1).trim();
+      }
+      const displayText = isHeading ? rule : (prefix + text);
+
+      // Choose font and size
+      let fontSize = 11;
+      let font = 'Helvetica';
+      let color = '#000000';
+      if (isHeading) {
+        fontSize = 13;
+        font = 'Helvetica-Bold';
+        color = '#1a237e';
+      }
+
+      // Print the rule at (70, rulesY)
+      doc.fontSize(fontSize).font(font).fillColor(color);
+      doc.text(displayText, 70, rulesY);
+      // We don't update rulesY because we don't need further text on that page
     });
 
-    // ---- Footer ----
+    // ---- Footer on last page ----
     const footerY = doc.page.height - 40;
-    doc.fontSize(10)
-       .fillColor("#78909c")
-       .text("Generated by NSTAD Online Quiz System", centerX, footerY, { align: "center" });
+    doc.fontSize(10).font('Helvetica').fillColor('#78909c');
+    const footerText = 'Generated by NSTAD Online Quiz System';
+    const footerWidth = doc.widthOfString(footerText);
+    doc.text(footerText, (pageWidth - footerWidth) / 2, footerY);
 
     doc.end();
 
