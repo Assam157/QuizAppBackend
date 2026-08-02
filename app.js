@@ -687,7 +687,7 @@ app.get("/registration-config", async (req, res) => {
     // We'll do: for each rule, if it's the first, print on current page; otherwise add page.
     rules.forEach((rule, index) => {
       // If not the first rule, add a new page
-      if (index > 14) {
+      if (index > 38) {
         doc.addPage();
         // Re-add the background image on the new page
         if (fs.existsSync(bgPath)) {
