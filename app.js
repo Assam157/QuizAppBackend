@@ -948,6 +948,40 @@ app.post("/finalize-ranks", async (req, res) => {
     res.status(500).json({ success: false, message: "Rank finalisation failed" });
   }
 });
+// ---------- Backup ZIP (without resetting) ----------
+app.get("/admin/backup-zip", async (req, res) => {
+  try {
+    const config = await getExamConfig();
+    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+
+    // Read existing CSVs (if they exist)
+    const resultsPath = getCsvPath(quizName);
+    const registrationsPath = getRegistrationCsvPath(quizName);
+    let resultsCsv = fs.existsSync(resultsPath) ? fs.readFileSync(resultsPath, 'utf8') : '';
+    let registrationsCsv = fs.existsSync(registrationsPath) ? fs.readFileSync(registrationsPath, 'utf8') : '';
+    const questionsCsv = await getQuestionsCsvString();
+
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeName = quizName.replace(/[^a-zA-Z0-9-_]/g, '_');
+    const zipName = `backup_${safeName}_${timestamp}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+    archive.pipe(res);
+
+    archive.append(resultsCsv, { name: 'results.csv' });
+    archive.append(registrationsCsv, { name: 'registrations.csv' });
+    archive.append(questionsCsv, { name: 'questions.csv' });
+
+    await archive.finalize();
+  } catch (err) {
+    console.error("Backup error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
+});
 
 // ---------- Archive & Clear ----------
 app.post("/admin/archive-and-clear", async (req, res) => {
