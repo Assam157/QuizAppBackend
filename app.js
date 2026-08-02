@@ -506,7 +506,7 @@ app.get("/registration-config", async (req, res) => {
 });
 
 // ---------- Register student (hardcoded name & email) ----------
-app.post("/register", async (req, res) => {
+ app.post("/register", async (req, res) => {
   try {
     const config = await getExamConfig();
     const extraFields = config.registrationFields ? Object.fromEntries(config.registrationFields) : {};
@@ -541,7 +541,7 @@ app.post("/register", async (req, res) => {
 
     await rebuildRegistrationCsv(quizName);
 
-    // ========== PDF GENERATION with NSTAD rules ==========
+    // ========== PDF GENERATION (fixed) ==========
     const doc = new PDFDocument({ size: "A4", margin: 50 });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
@@ -557,6 +557,7 @@ app.post("/register", async (req, res) => {
     const pageWidth = doc.page.width;
     const centerX = pageWidth / 2;
 
+    // Header
     doc.fontSize(28)
        .fillColor("#1a237e")
        .font("Helvetica-Bold")
@@ -569,6 +570,7 @@ app.post("/register", async (req, res) => {
        .text("Registration Confirmation", centerX, 130, { align: "center" })
        .moveDown(1);
 
+    // Card with student details
     const cardX = 80;
     const cardY = 180;
     const cardWidth = pageWidth - 160;
@@ -630,6 +632,7 @@ app.post("/register", async (req, res) => {
     doc.text(startStr, rightCol, yPos);
     yPos += 30;
 
+    // ========== RULES SECTION (FIXED LOOP) ==========
     const rulesY = cardY + cardHeight + 40;
     doc.fontSize(16)
        .fillColor("#1a237e")
@@ -640,8 +643,11 @@ app.post("/register", async (req, res) => {
     const ruleFontSize = 11;
     const ruleColor = "#37474f";
     const bulletX = 70;
-    let rulesYPos = rulesY + 40;
+    // Start positioning from after the heading
+    let currentY = doc.y + 10;  // small gap after heading
+    const pageWidthForText = pageWidth - 140;
 
+    // The rules array (unchanged)
     const rules = [
       "The National Science and Technology Digital Archive (NSTAD) invites students from standard XI to undergraduate any stream to participate in this online quiz celebrating the life, work, and scientific legacy of Acharya Prafulla Chandra Ray, one of India's greatest chemists and pioneers of modern scientific research.",
       "",
@@ -684,18 +690,19 @@ app.post("/register", async (req, res) => {
       "Explore the National Science and Technology Digital Archive and discover the remarkable scientific contributions of Acharya Prafulla Chandra Ray before taking the quiz. Visit: www.nstad.in"
     ];
 
-    doc.fontSize(ruleFontSize)
-       .fillColor(ruleColor)
-       .font("Helvetica");
-
-    rules.forEach((rule, i) => {
-      const y = rulesYPos + i * 18;
+    // Iterate through each rule and draw it with automatic positioning
+    rules.forEach((rule) => {
+      // Skip empty lines but add a small gap
       if (rule.trim() === "") {
-        rulesYPos += 18;
+        doc.moveDown(0.5);
         return;
       }
+
+      // Determine prefix and font style
       let prefix = "• ";
       let text = rule;
+      let isHeading = false;
+
       if (rule.startsWith("✔")) {
         prefix = "✔ ";
         text = rule.substring(1).trim();
@@ -705,18 +712,33 @@ app.post("/register", async (req, res) => {
       } else if (rule.startsWith("•")) {
         prefix = "• ";
         text = rule.substring(1).trim();
+      } else if (/^[A-Za-z\s]+:/.test(rule)) {
+        isHeading = true;
+        text = rule; // keep as is
       }
-      const isHeading = rule.match(/^[A-Za-z\s]+:/);
+
+      // Set font based on heading or regular
       if (isHeading) {
-        doc.font("Helvetica-Bold").fillColor("#1a237e").fontSize(ruleFontSize + 1);
-        doc.text(text, bulletX, y, { width: pageWidth - 140 });
-        doc.font("Helvetica").fillColor(ruleColor).fontSize(ruleFontSize);
+        doc.font("Helvetica-Bold")
+           .fillColor("#1a237e")
+           .fontSize(ruleFontSize + 1);
       } else {
-        doc.text(prefix + text, bulletX, y, { width: pageWidth - 140 });
+        doc.font("Helvetica")
+           .fillColor(ruleColor)
+           .fontSize(ruleFontSize);
       }
-      rulesYPos += 18;
+
+      // Build content string
+      const content = isHeading ? text : prefix + text;
+
+      // Draw text at current cursor position (doc.y)
+      doc.text(content, bulletX, { width: pageWidthForText, align: 'left' });
+
+      // Add a small gap after each line (except maybe headings)
+      doc.moveDown(0.2);
     });
 
+    // Footer
     const footerY = doc.page.height - 40;
     doc.fontSize(10)
        .fillColor("#78909c")
