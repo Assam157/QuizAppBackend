@@ -506,7 +506,8 @@ app.get("/registration-config", async (req, res) => {
 });
 
 // ---------- Register student (hardcoded name & email) ----------
-  app.post("/register", async (req, res) => {
+  // ---------- Register student (certificate only, no rules) ----------
+app.post("/register", async (req, res) => {
   try {
     const config = await getExamConfig();
     const extraFields = config.registrationFields ? Object.fromEntries(config.registrationFields) : {};
@@ -541,7 +542,7 @@ app.get("/registration-config", async (req, res) => {
 
     await rebuildRegistrationCsv(quizName);
 
-    // ========== PDF GENERATION (page break after each rule) ==========
+    // ========== PDF GENERATION (certificate only – no rules) ==========
     const doc = new PDFDocument({ size: "A4", margin: 0 });
     const buffers = [];
     doc.on('data', buffers.push.bind(buffers));
@@ -585,14 +586,6 @@ app.get("/registration-config", async (req, res) => {
        .rect(cardX, cardY, cardWidth, cardHeight)
        .stroke();
 
-    // ---- Helper to print text at a given position (no width option) ----
-    function printAt(text, x, y, fontSize = 11, font = 'Helvetica', color = '#000000') {
-      if (!text) return y;
-      doc.fontSize(fontSize).font(font).fillColor(color);
-      doc.text(text, x, y);  // no width or align – just raw
-      return doc.y + 4;
-    }
-
     // ---- Header ----
     doc.fontSize(24).font('Helvetica-Bold').fillColor('#1a237e');
     const title = config.quizName;
@@ -633,102 +626,7 @@ app.get("/registration-config", async (req, res) => {
     const startStr = config.startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
     printField('Quiz Date & Time (IST)', startStr);
 
-    // ---- Rules section: heading on first page ----
-    let rulesY = cardY + cardHeight + 40;
-    doc.fontSize(16).font('Helvetica-Bold').fillColor('#1a237e');
-    const heading = 'Rules & Regulations';
-    const headingWidth = doc.widthOfString(heading);
-    doc.text(heading, (pageWidth - headingWidth) / 2, rulesY);
-    rulesY += 30;
-
-    // ---- Rules array (same as before) ----
-   const rules = [
-  "The National Science and Technology Digital Archive (NSTAD) invites students from Class XI to Undergraduate to participate in this online quiz celebrating Acharya Prafulla Chandra Ray.",
-  "Eligibility:",
-  "✔ Open to Class XI, XII, and Undergraduates from any recognized institution.",
-  "✔ Free participation, one entry per participant.",
-  "Quiz Format:",
-  "✔ Multiple-choice questions based on archival documents.",
-  "✔ Explore www.nstad.in before attempting.",
-  "Submission Guidelines:",
-  `✔ Quiz available from ${startStr} to ${new Date(config.startTime.getTime() + config.durationMinutes * 60000).toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}.`,
-  "✔ Late submissions not considered.",
-  "✔ Responses cannot be edited after submission.",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-   " ",
-  "Fair Participation:",
-  "✔ Answer independently.",
-  "✔ Unfair means or multiple entries may lead to disqualification.",
-  "✔ Organizers may verify details before results.",
-  "Results:",
-  "✔ Winners based on highest score, tie by response time.",
-  "✔ Organizing committee's decision is final.",
-  "Disclaimer:",
-  "✔ Participants agree to abide by rules.",
-  "✔ Organizers not responsible for poor connectivity; no time extension.",
-  "✔ Organizers may modify/cancel quiz without prior notice.",
-  "Explore the National Science and Technology Digital Archive at www.nstad.in."
-];
-    // ---- Loop: each rule on a new page (except the first rule) ----
-    // We'll start on the current page with the heading, then for each rule,
-    // we add a new page, then draw the rule.
-    // But the first rule should be on the same page as the heading.
-    // We'll do: for each rule, if it's the first, print on current page; otherwise add page.
-    rules.forEach((rule, index) => {
-      // If not the first rule, add a new page
-      if (index > 38) {
-        doc.addPage();
-        // Re-add the background image on the new page
-        if (fs.existsSync(bgPath)) {
-          doc.image(bgPath, 0, 0, { width: pageWidth, height: pageHeight });
-        } else {
-          doc.rect(0, 0, pageWidth, pageHeight).fill('#f8f9fa');
-        }
-        // Reset y to top margin
-        rulesY = 50;
-      } else {
-        // First rule: continue from where we left off (after heading)
-        // But heading is already printed, so we just use current y (which is rulesY)
-        // We'll set rulesY to current doc.y (it was updated after heading)
-        rulesY = doc.y + 10; // small gap after heading
-      }
-
-      // Determine styling
-      const isHeading = /^[A-Za-z\s]+:/.test(rule);
-      const isBullet = /^[✔⮚•]/.test(rule);
-      let prefix = '';
-      let text = rule;
-      if (isBullet) {
-        prefix = rule.charAt(0) + ' ';
-        text = rule.substring(1).trim();
-      }
-      const displayText = isHeading ? rule : (prefix + text);
-
-      // Choose font and size
-      let fontSize = 11;
-      let font = 'Helvetica';
-      let color = '#000000';
-      if (isHeading) {
-        fontSize = 13;
-        font = 'Helvetica-Bold';
-        color = '#1a237e';
-      }
-
-      // Print the rule at (70, rulesY)
-      doc.fontSize(fontSize).font(font).fillColor(color);
-      doc.text(displayText, 70, rulesY);
-      // We don't update rulesY because we don't need further text on that page
-    });
-
-    // ---- Footer on last page ----
+    // ---- Footer ----
     const footerY = doc.page.height - 40;
     doc.fontSize(10).font('Helvetica').fillColor('#78909c');
     const footerText = 'Generated by NSTAD Online Quiz System';
