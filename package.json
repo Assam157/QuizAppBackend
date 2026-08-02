@@ -1,0 +1,28 @@
+{
+  "name": "trivia-quiz-backend",
+  "version": "1.0.0",
+  "description": "Backend for a trivia quiz application with registration, MCQ, and results.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "mongoose": "^8.5.3",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "keywords": ["quiz", "trivia", "mcq", "exam", "nodejs", "express", "mongodb"],
+  "author": "Your Name",
+  "license": "MIT"
+}
