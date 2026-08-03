@@ -1,4 +1,4 @@
- require("dotenv").config();
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -505,8 +505,7 @@ app.get("/registration-config", async (req, res) => {
   }
 });
 
-// ---------- Register student (hardcoded name & email) ----------
-  // ---------- Register student (certificate only, no rules) ----------
+// ---------- Register student ----------
 app.post("/register", async (req, res) => {
   try {
     const config = await getExamConfig();
@@ -642,6 +641,47 @@ app.post("/register", async (req, res) => {
     }
   }
 });
+
+// ============ LOGIN ROUTE (added based on second code) ============
+app.post("/login", async (req, res) => {
+  try {
+    const { regNo, email } = req.body;
+    if (!regNo || !email) {
+      return res.status(400).json({ success: false, message: "Registration number and email are required." });
+    }
+
+    const student = await Student.findOne({ regNo });
+    if (!student) {
+      return res.status(404).json({ success: false, message: "Invalid registration number." });
+    }
+
+    // Verify email (case‑insensitive)
+    const storedEmail = student.customData.get('email');
+    if (!storedEmail || storedEmail.toLowerCase() !== email.toLowerCase()) {
+      return res.status(401).json({ success: false, message: "Email does not match our records." });
+    }
+
+    // Check if already submitted
+    const existing = await QuizAttempt.findOne({ studentRegNo: regNo, submitted: true });
+    if (existing) {
+      return res.status(403).json({ success: false, message: "You have already submitted the quiz." });
+    }
+
+    const config = await getExamConfig();
+    res.json({
+      success: true,
+      student: { regNo: student.regNo, customData: Object.fromEntries(student.customData || new Map()) },
+      examStartTime: config.startTime,
+      examDuration: config.durationMinutes,
+      positiveMarks: config.positiveMarks,
+      negativeMarks: config.negativeMarks,
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ success: false, message: "Login failed." });
+  }
+});
+
 // ---------- Get questions ----------
 app.get("/get-questions", async (req, res) => {
   try {
@@ -771,13 +811,13 @@ app.post("/finalize-ranks", async (req, res) => {
     res.status(500).json({ success: false, message: "Rank finalisation failed" });
   }
 });
+
 // ---------- Backup ZIP (without resetting) ----------
 app.get("/admin/backup-zip", async (req, res) => {
   try {
     const config = await getExamConfig();
     const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
 
-    // Read existing CSVs (if they exist)
     const resultsPath = getCsvPath(quizName);
     const registrationsPath = getRegistrationCsvPath(quizName);
     let resultsCsv = fs.existsSync(resultsPath) ? fs.readFileSync(resultsPath, 'utf8') : '';
@@ -843,7 +883,6 @@ app.post("/admin/archive-and-clear", async (req, res) => {
 // ---------- Reset exam (with versioning and auto‑download ZIP) ----------
 app.post("/admin/reset-exam", async (req, res) => {
   try {
-    // 1. Get current config (or create default)
     let config = await ExamConfig.findOne();
     if (!config) {
       config = new ExamConfig({
@@ -861,7 +900,6 @@ app.post("/admin/reset-exam", async (req, res) => {
     const oldQuizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
     console.log(`🔄 Resetting exam for quiz: "${oldQuizName}"`);
 
-    // ---- Gather current CSV data before any deletion ----
     let resultsCsv = '';
     const resultsPath = getCsvPath(oldQuizName);
     if (fs.existsSync(resultsPath)) {
@@ -876,7 +914,6 @@ app.post("/admin/reset-exam", async (req, res) => {
 
     const questionsCsv = await getQuestionsCsvString();
 
-    // ---- Perform reset operations ----
     await Student.deleteMany({ quizName: oldQuizName });
     await QuizAttempt.deleteMany({ quizName: oldQuizName });
     console.log(`🗑️ Deleted students and attempts for "${oldQuizName}".`);
@@ -905,14 +942,11 @@ app.post("/admin/reset-exam", async (req, res) => {
     }
     await config.save();
 
-    // Rebuild CSVs (empty)
     await rebuildCsv(config.quizName);
     await rebuildRegistrationCsv(config.quizName);
 
-    // Restart watcher
     startRankWatcher();
 
-    // ---- Send ZIP archive with the three CSV files ----
     const archive = archiver('zip', { zlib: { level: 9 } });
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const safeName = oldQuizName.replace(/[^a-zA-Z0-9-_]/g, '_');
@@ -922,7 +956,6 @@ app.post("/admin/reset-exam", async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
     archive.pipe(res);
 
-    // Append the CSV data
     archive.append(resultsCsv, { name: 'results.csv' });
     archive.append(registrationsCsv, { name: 'registrations.csv' });
     archive.append(questionsCsv, { name: 'questions.csv' });
@@ -931,11 +964,9 @@ app.post("/admin/reset-exam", async (req, res) => {
 
   } catch (err) {
     console.error("❌ Reset exam error:", err);
-    // If we haven't sent headers yet, send JSON error
     if (!res.headersSent) {
       res.status(500).json({ success: false, message: err.message });
     } else {
-      // If headers already sent, we can only close the connection
       res.end();
     }
   }
