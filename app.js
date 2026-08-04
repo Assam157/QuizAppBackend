@@ -1,4 +1,4 @@
-require("dotenv").config();
+  require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -7,7 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 const { createObjectCsvWriter } = require("csv-writer");
-const archiver = require("archiver");
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -71,9 +71,9 @@ const quizAttemptSchema = new mongoose.Schema({
   totalMarksObtained: { type: Number, default: null },
   totalMarks: { type: Number, default: null },
   totalTimeMinutes: { type: Number, default: null },
-  durationMinutes: { type: Number, default: 25 },
+  durationMinutes: { type: Number, default: 30 },
   positiveMarks: { type: Number, default: 1 },
-  negativeMarks: { type: Number, default: 1 },
+  negativeMarks: { type: Number, default: 0 },
   disqualified: { type: Boolean, default: false },
   submitted: { type: Boolean, default: false },
   rank: { type: Number, default: null },
@@ -100,12 +100,14 @@ const archivedAttemptSchema = new mongoose.Schema({
 });
 const ArchivedQuizAttempt = mongoose.model("ArchivedQuizAttempt", archivedAttemptSchema);
 
+// ---- ExamConfig – only for extra custom fields ----
 const examConfigSchema = new mongoose.Schema({
-  quizName: { type: String, default: "National Science and Technology Digital Archive (NSTAD) Online Quiz" },
+  quizName: { type: String, default: "Trivia Quiz" },
   startTime: { type: Date, required: true },
-  durationMinutes: { type: Number, required: true, default: 25 },
+  durationMinutes: { type: Number, required: true, default: 30 },
   positiveMarks: { type: Number, default: 1 },
-  negativeMarks: { type: Number, default: 1 },
+  negativeMarks: { type: Number, default: 0 },
+  // Only extra fields (name and email are hardcoded)
   registrationFields: {
     type: Map,
     of: new mongoose.Schema({
@@ -132,16 +134,16 @@ async function getExamConfig() {
   let config = await ExamConfig.findOne();
   if (!config) {
     config = new ExamConfig({
-      quizName: "National Science and Technology Digital Archive (NSTAD) Online Quiz",
+      quizName: "Trivia Quiz",
       startTime: process.env.QUIZ_START_TIME
         ? new Date(process.env.QUIZ_START_TIME)
         : new Date(Date.now() + 5 * 60000),
-      durationMinutes: 25,
+      durationMinutes: 30,
       positiveMarks: 1,
-      negativeMarks: 1,
+      negativeMarks: 0,
     });
     await config.save();
-    console.log("📝 Default exam config created (NSTAD rules)");
+    console.log("📝 Default exam config created (name & email are hardcoded)");
   }
   return config;
 }
@@ -286,6 +288,7 @@ async function rebuildRegistrationCsv(quizName) {
     const data = getCustomDataMap(s.customData);
     data.forEach((_, key) => allCustomKeys.add(key));
   });
+  // Ensure 'name' and 'email' are included in the header even if not in the first student (they should be)
   allCustomKeys.add('name');
   allCustomKeys.add('email');
   const sortedKeys = Array.from(allCustomKeys).sort();
@@ -323,7 +326,7 @@ async function finalizeRanks() {
   try {
     console.log("⏳ Finalising ranks...");
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
 
     const attempts = await QuizAttempt.find({ submitted: true, quizName }).lean();
     const nonDisqualified = attempts
@@ -384,46 +387,6 @@ function startRankWatcher() {
   }, 30000);
 }
 
-// ============ NEW: Generate Questions CSV string ============
-async function getQuestionsCsvString() {
-  const questions = await Question.find().sort({ createdAt: 1 }).lean();
-  if (questions.length === 0) return '';
-  const records = questions.map(q => ({
-    question: q.question,
-    optionA: q.options.A,
-    optionB: q.options.B,
-    optionC: q.options.C,
-    optionD: q.options.D,
-    correctAnswer: q.correctAnswer,
-    imageUrl: q.imageUrl || '',
-    published: q.published ? 'Yes' : 'No',
-    createdAt: q.createdAt ? q.createdAt.toISOString() : '',
-  }));
-  const header = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Image URL', 'Published', 'Created At'];
-  const rows = records.map(r => [
-    r.question,
-    r.optionA,
-    r.optionB,
-    r.optionC,
-    r.optionD,
-    r.correctAnswer,
-    r.imageUrl,
-    r.published,
-    r.createdAt
-  ]);
-  const csvLines = [header.join(',')];
-  rows.forEach(row => {
-    const escaped = row.map(field => {
-      if (typeof field === 'string' && (field.includes(',') || field.includes('"') || field.includes('\n'))) {
-        return `"${field.replace(/"/g, '""')}"`;
-      }
-      return field;
-    });
-    csvLines.push(escaped.join(','));
-  });
-  return csvLines.join('\n');
-}
-
 // ============ ROUTES ============
 
 // ---------- Admin config ----------
@@ -438,7 +401,7 @@ app.get("/admin/config", async (req, res) => {
       config: {
         ...config.toObject(),
         registrationFields: regFields,
-        quizName: config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz",
+        quizName: config.quizName || "Trivia Quiz",
         quizVersion: config.quizVersion || 1,
       },
     });
@@ -453,12 +416,13 @@ app.post("/admin/config", async (req, res) => {
     if (!startTime || durationMinutes == null || positiveMarks == null || negativeMarks == null)
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
+    // Delete all questions when config is saved
     await Question.deleteMany({});
     console.log("🧹 All questions deleted due to config update.");
 
     let config = await ExamConfig.findOne();
     if (!config) config = new ExamConfig();
-    const newQuizName = quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const newQuizName = quizName || "Trivia Quiz";
     config.quizName = newQuizName;
     config.startTime = new Date(startTime);
     config.durationMinutes = parseInt(durationMinutes);
@@ -466,9 +430,11 @@ app.post("/admin/config", async (req, res) => {
     config.negativeMarks = parseFloat(negativeMarks);
     config.ranksFinalised = false;
 
+    // Only extra fields; name and email are hardcoded and NOT stored in registrationFields
     const map = new Map();
     if (registrationFields) {
       for (const [key, value] of Object.entries(registrationFields)) {
+        // Skip if someone tries to pass 'name' or 'email' – they are ignored
         if (key === 'name' || key === 'email') continue;
         map.set(key, {
           enabled: value.enabled ?? true,
@@ -505,13 +471,15 @@ app.get("/registration-config", async (req, res) => {
   }
 });
 
-// ---------- Register student ----------
+// ---------- Register student (hardcoded name & email) ----------
+ // ---------- Register student (hardcoded name & email) ----------
 app.post("/register", async (req, res) => {
   try {
     const config = await getExamConfig();
     const extraFields = config.registrationFields ? Object.fromEntries(config.registrationFields) : {};
     const customData = new Map();
 
+    // ---- Hardcoded name and email ----
     const name = req.body.name;
     const email = req.body.email;
     if (!name || !email) {
@@ -520,6 +488,7 @@ app.post("/register", async (req, res) => {
     customData.set('name', name);
     customData.set('email', email);
 
+    // ---- Process extra custom fields ----
     const missing = [];
     for (const [fieldName, settings] of Object.entries(extraFields)) {
       if (!settings.enabled) continue;
@@ -530,119 +499,217 @@ app.post("/register", async (req, res) => {
     if (missing.length)
       return res.status(400).json({ success: false, message: `Required: ${missing.join(", ")}` });
 
+    // Email uniqueness check
     const existing = await Student.findOne({ "customData.email": email });
     if (existing) return res.status(409).json({ success: false, message: "Email already registered" });
 
     const regNo = await generateRegNo();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
 
     const student = new Student({ regNo, quizName, customData });
     await student.save();
 
     await rebuildRegistrationCsv(quizName);
 
-    // ========== PDF GENERATION (certificate only – no rules) ==========
-    const doc = new PDFDocument({ size: "A4", margin: 0 });
-    const buffers = [];
-    doc.on('data', buffers.push.bind(buffers));
-    doc.on('end', () => {
-      const pdfData = Buffer.concat(buffers);
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=reg-${regNo}.pdf`);
-      res.send(pdfData);
-    });
-    doc.on('error', (err) => {
-      console.error("PDF error:", err);
-      if (!res.headersSent) {
-        res.status(500).json({ success: false, message: "PDF generation failed" });
-      }
-    });
+    // ========== STYLISH PDF GENERATION ==========
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
+    doc.pipe(res);
 
-    // ---- Fixed dimensions ----
-    const pageWidth = 595.28;
-    const pageHeight = 841.89;
-
-    // ---- Background image ----
+    // ---- Background image (if exists) ----
     const bgPath = path.join(__dirname, "assets", "image.png");
     if (fs.existsSync(bgPath)) {
-      doc.image(bgPath, 0, 0, { width: pageWidth, height: pageHeight });
+      doc.image(bgPath, 0, 0, { width: doc.page.width, height: doc.page.height });
     } else {
-      doc.rect(0, 0, pageWidth, pageHeight).fill('#f8f9fa');
+      console.warn("⚠️ Background image not found at", bgPath);
+      // Fallback: a subtle light gradient background
+      doc.rect(0, 0, doc.page.width, doc.page.height).fill("#f8f9fa");
     }
 
-    // ---- Card rectangle ----
+    // ---- Main content (centered) ----
+    const pageWidth = doc.page.width;
+    const centerX = pageWidth / 2;
+
+    // --- Quiz Name (large, colored, centered) ---
+    doc.fontSize(28)
+       .fillColor("#1a237e")        // deep blue
+       .font("Helvetica-Bold")
+       .text(quizName, centerX, 80, { align: "center" })
+       .moveDown(0.5);
+
+    // --- Subtitle: "Registration Confirmation" ---
+    doc.fontSize(18)
+       .fillColor("#303f9f")
+       .font("Helvetica")
+       .text("Registration Confirmation", centerX, 130, { align: "center" })
+       .moveDown(1);
+
+    // --- Registration Card (white box with shadow effect) ---
     const cardX = 80;
-    const cardY = 150;
+    const cardY = 180;
     const cardWidth = pageWidth - 160;
-    const cardHeight = 250;
-    doc.fillColor('#ffffff')
-       .fillOpacity(0.9)
+    const cardHeight = 260;
+
+    // White background with rounded corners (simulated via rect + slight opacity)
+    doc.fillColor("#ffffff")
+       .fillOpacity(0.85)
        .rect(cardX, cardY, cardWidth, cardHeight)
        .fill()
        .fillOpacity(1)
-       .strokeColor('#b0bec5')
+       .strokeColor("#b0bec5")
        .lineWidth(1)
        .rect(cardX, cardY, cardWidth, cardHeight)
        .stroke();
 
-    // ---- Header ----
-    doc.fontSize(24).font('Helvetica-Bold').fillColor('#1a237e');
-    const title = config.quizName;
-    const titleWidth = doc.widthOfString(title);
-    doc.text(title, (pageWidth - titleWidth) / 2, 40);
-
-    doc.fontSize(16).font('Helvetica').fillColor('#303f9f');
-    const sub = 'Registration Confirmation';
-    const subWidth = doc.widthOfString(sub);
-    doc.text(sub, (pageWidth - subWidth) / 2, 80);
-
-    // ---- Student details (inside card) ----
+    // --- Card Content ---
     let yPos = cardY + 30;
-    const leftCol = cardX + 20;
-    const rightCol = cardX + 180;
-    const labelColor = '#455a64';
-    const valueColor = '#1e293b';
+    const leftCol = cardX + 30;
+    const rightCol = cardX + 200;
 
-    function printField(label, value) {
-      doc.fontSize(12).font('Helvetica-Bold').fillColor(labelColor);
-      doc.text(label + ':', leftCol, yPos);
-      doc.font('Helvetica').fillColor(valueColor);
-      doc.text(value, rightCol, yPos);
-      yPos += 30;
-    }
+    const detailFontSize = 13;
+    const labelColor = "#455a64";
+    const valueColor = "#1e293b";
 
-    printField('Registration No', regNo);
-    printField('Name', name);
-    printField('Email', email);
+    doc.fontSize(detailFontSize).font("Helvetica-Bold").fillColor(labelColor);
+    doc.text("Registration No:", leftCol, yPos);
+    doc.font("Helvetica").fillColor(valueColor);
+    doc.text(regNo, rightCol, yPos);
+    yPos += 30;
+
+    doc.font("Helvetica-Bold").fillColor(labelColor);
+    doc.text("Name:", leftCol, yPos);
+    doc.font("Helvetica").fillColor(valueColor);
+    doc.text(name, rightCol, yPos);
+    yPos += 30;
+
+    doc.font("Helvetica-Bold").fillColor(labelColor);
+    doc.text("Email:", leftCol, yPos);
+    doc.font("Helvetica").fillColor(valueColor);
+    doc.text(email, rightCol, yPos);
+    yPos += 30;
+
+    // Custom fields (extra)
     for (const [fieldName, settings] of Object.entries(extraFields)) {
       if (!settings.enabled) continue;
-      const value = customData.get(fieldName) || '';
+      const value = customData.get(fieldName) || "";
       if (value) {
         const label = fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
-        printField(label, value);
+        doc.font("Helvetica-Bold").fillColor(labelColor);
+        doc.text(label + ":", leftCol, yPos);
+        doc.font("Helvetica").fillColor(valueColor);
+        doc.text(value, rightCol, yPos);
+        yPos += 30;
       }
     }
-    const startStr = config.startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    printField('Quiz Date & Time (IST)', startStr);
+
+    // --- Quiz Start Time ---
+    const startIST = config.startTime.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+    doc.font("Helvetica-Bold").fillColor(labelColor);
+    doc.text("Quiz Date & Time (IST):", leftCol, yPos);
+    doc.font("Helvetica").fillColor(valueColor);
+    doc.text(startIST, rightCol, yPos);
+    yPos += 30;
+
+    // --- Rules Section (below card) ---
+    const rulesY = cardY + cardHeight + 40;
+    doc.fontSize(16)
+       .fillColor("#1a237e")
+       .font("Helvetica-Bold")
+       .text("Important Rules", centerX, rulesY, { align: "center" })
+       .moveDown(0.5);
+
+    const ruleFontSize = 12;
+    const ruleColor = "#37474f";
+    const bulletX = 70;
+    let rulesYPos = rulesY + 40;
+
+    const rules = [
+      "The quiz will start exactly at the mentioned time.",
+      `Total duration: ${config.durationMinutes} minutes.`,
+      "You may navigate between questions freely.",
+      "Use the 'Clear Answer' button to deselect your choice.",
+      "Submit the quiz manually before the timer ends.",
+      "Failure to submit will result in disqualification.",
+      "Any malpractice leads to immediate disqualification."
+    ];
+
+    doc.fontSize(ruleFontSize)
+       .fillColor(ruleColor)
+       .font("Helvetica");
+
+    rules.forEach((rule, i) => {
+      const y = rulesYPos + i * 22;
+      doc.text(`• ${rule}`, bulletX, y, { width: pageWidth - 140 });
+    });
 
     // ---- Footer ----
     const footerY = doc.page.height - 40;
-    doc.fontSize(10).font('Helvetica').fillColor('#78909c');
-    const footerText = 'Generated by NSTAD Online Quiz System';
-    const footerWidth = doc.widthOfString(footerText);
-    doc.text(footerText, (pageWidth - footerWidth) / 2, footerY);
+    doc.fontSize(10)
+       .fillColor("#78909c")
+       .text("Generated by Trivia Quiz System", centerX, footerY, { align: "center" });
 
     doc.end();
 
   } catch (err) {
     console.error("Registration error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: "Registration failed" });
+    res.status(500).json({ success: false, message: "Registration failed" });
+  }
+});
+// ---------- Download questions CSV ----------
+app.get("/questions-csv", async (req, res) => {
+  try {
+    const questions = await Question.find().sort({ createdAt: 1 }).lean();
+    if (questions.length === 0) {
+      return res.status(404).json({ success: false, message: "No questions found." });
     }
+
+    const records = questions.map(q => ({
+      question: q.question,
+      optionA: q.options.A,
+      optionB: q.options.B,
+      optionC: q.options.C,
+      optionD: q.options.D,
+      correctAnswer: q.correctAnswer,
+      imageUrl: q.imageUrl || "",
+      published: q.published ? "Yes" : "No",
+      createdAt: q.createdAt ? q.createdAt.toISOString() : "",
+    }));
+
+    const csvPath = path.join(resultsDir, `questions_${Date.now()}.csv`);
+    const writer = createObjectCsvWriter({
+      path: csvPath,
+      header: [
+        { id: "question", title: "Question" },
+        { id: "optionA", title: "Option A" },
+        { id: "optionB", title: "Option B" },
+        { id: "optionC", title: "Option C" },
+        { id: "optionD", title: "Option D" },
+        { id: "correctAnswer", title: "Correct Answer" },
+        { id: "imageUrl", title: "Image URL" },
+        { id: "published", title: "Published" },
+        { id: "createdAt", title: "Created At" },
+      ],
+      append: false,
+    });
+    await writer.writeRecords(records);
+
+    const downloadName = `questions_${new Date().toISOString().slice(0,10)}.csv`;
+    res.download(csvPath, downloadName, (err) => {
+      if (err) console.error("Download error:", err);
+      // Clean up the temporary file after download
+      fs.unlink(csvPath, (unlinkErr) => {
+        if (unlinkErr) console.error("Failed to delete temp CSV:", unlinkErr);
+      });
+    });
+  } catch (err) {
+    console.error("Questions CSV error:", err);
+    res.status(500).json({ success: false, message: "Server error: " + err.message });
   }
 });
 
-// ============ LOGIN ROUTE (added based on second code) ============
+// ---------- Login ----------
+// ---------- Login (email only) ----------
 app.post("/login", async (req, res) => {
   try {
     const { regNo, email } = req.body;
@@ -680,9 +747,9 @@ app.post("/login", async (req, res) => {
     console.error("Login error:", err);
     res.status(500).json({ success: false, message: "Login failed." });
   }
-});
+}); 
 
-// ---------- Get questions ----------
+// ---------- Get questions (only published) ----------
 app.get("/get-questions", async (req, res) => {
   try {
     const config = await getExamConfig();
@@ -711,7 +778,7 @@ app.post("/start-quiz", async (req, res) => {
       if (!student) return res.status(404).json({ success: false, message: "Student not found" });
       attempt = new QuizAttempt({
         studentRegNo: regNo,
-        quizName: config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz",
+        quizName: config.quizName || "Trivia Quiz",
         startTime: now,
         durationMinutes: config.durationMinutes,
         positiveMarks: config.positiveMarks,
@@ -749,7 +816,7 @@ app.post("/submit-quiz", async (req, res) => {
       attempt.endTime = now;
       attempt.answers = answers;
       await attempt.save();
-      await rebuildCsv(config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz");
+      await rebuildCsv(config.quizName || "Trivia Quiz");
       return res.json({ success: true, disqualified: true, message: "Time expired. You are disqualified." });
     }
 
@@ -782,7 +849,7 @@ app.post("/submit-quiz", async (req, res) => {
     attempt.submitted = true;
     await attempt.save();
 
-    await rebuildCsv(config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz");
+    await rebuildCsv(config.quizName || "Trivia Quiz");
 
     res.json({
       success: true,
@@ -812,45 +879,11 @@ app.post("/finalize-ranks", async (req, res) => {
   }
 });
 
-// ---------- Backup ZIP (without resetting) ----------
-app.get("/admin/backup-zip", async (req, res) => {
-  try {
-    const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
-
-    const resultsPath = getCsvPath(quizName);
-    const registrationsPath = getRegistrationCsvPath(quizName);
-    let resultsCsv = fs.existsSync(resultsPath) ? fs.readFileSync(resultsPath, 'utf8') : '';
-    let registrationsCsv = fs.existsSync(registrationsPath) ? fs.readFileSync(registrationsPath, 'utf8') : '';
-    const questionsCsv = await getQuestionsCsvString();
-
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const safeName = quizName.replace(/[^a-zA-Z0-9-_]/g, '_');
-    const zipName = `backup_${safeName}_${timestamp}.zip`;
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
-    archive.pipe(res);
-
-    archive.append(resultsCsv, { name: 'results.csv' });
-    archive.append(registrationsCsv, { name: 'registrations.csv' });
-    archive.append(questionsCsv, { name: 'questions.csv' });
-
-    await archive.finalize();
-  } catch (err) {
-    console.error("Backup error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  }
-});
-
 // ---------- Archive & Clear ----------
 app.post("/admin/archive-and-clear", async (req, res) => {
   try {
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
 
     const attempts = await QuizAttempt.find({ submitted: true, quizName }).lean();
     if (attempts.length === 0) {
@@ -879,49 +912,64 @@ app.post("/admin/archive-and-clear", async (req, res) => {
     res.status(500).json({ success: false, message: "Archive failed." });
   }
 });
+// POST /admin/reset-config
+app.post('/admin/reset-config', async (req, res) => {
+  try {
+    // Reset config file to blank/default values
+    const defaultConfig = {
+      startTime: null,
+      durationMinutes: 0,
+      positiveMarks: 0,
+      negativeMarks: 0,
+      quizName: '',
+      registrationFields: {},
+      // ... any other fields
+    };
+    // Write defaultConfig to your config file (e.g., config.json)
+    await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
 
-// ---------- Reset exam (with versioning and auto‑download ZIP) ----------
+    // Optionally clear CSV and reset ranks (true blank slate)
+    await clearCsvFile();    // delete results.csv, registrations.csv, etc.
+    await resetRanks();      // if you have a ranks file
+
+    res.json({ success: true, message: 'Configuration reset to blank.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+// ---------- Reset exam (with versioning) ----------
 app.post("/admin/reset-exam", async (req, res) => {
   try {
+    // 1. Get or create config – if it fails, create a default one
     let config = await ExamConfig.findOne();
     if (!config) {
+      console.log("⚠️ No config found – creating a default one.");
       config = new ExamConfig({
-        quizName: "National Science and Technology Digital Archive (NSTAD) Online Quiz",
+        quizName: "Trivia Quiz",
         startTime: new Date(Date.now() + 5 * 60000),
-        durationMinutes: 25,
+        durationMinutes: 30,
         positiveMarks: 1,
-        negativeMarks: 1,
+        negativeMarks: 0,
         registrationFields: new Map(),
         quizVersion: 1,
       });
       await config.save();
     }
 
-    const oldQuizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const oldQuizName = config.quizName || "Trivia Quiz";
     console.log(`🔄 Resetting exam for quiz: "${oldQuizName}"`);
 
-    let resultsCsv = '';
-    const resultsPath = getCsvPath(oldQuizName);
-    if (fs.existsSync(resultsPath)) {
-      resultsCsv = fs.readFileSync(resultsPath, 'utf8');
-    }
+    // 2. Delete all students and attempts for this quiz
+    const studentDeleteResult = await Student.deleteMany({ quizName: oldQuizName });
+    const attemptDeleteResult = await QuizAttempt.deleteMany({ quizName: oldQuizName });
+    console.log(`🗑️ Deleted ${studentDeleteResult.deletedCount} students and ${attemptDeleteResult.deletedCount} attempts.`);
 
-    let registrationsCsv = '';
-    const registrationsPath = getRegistrationCsvPath(oldQuizName);
-    if (fs.existsSync(registrationsPath)) {
-      registrationsCsv = fs.readFileSync(registrationsPath, 'utf8');
-    }
-
-    const questionsCsv = await getQuestionsCsvString();
-
-    await Student.deleteMany({ quizName: oldQuizName });
-    await QuizAttempt.deleteMany({ quizName: oldQuizName });
-    console.log(`🗑️ Deleted students and attempts for "${oldQuizName}".`);
-
+    // 3. Increment quiz version
     const newVersion = (config.quizVersion || 1) + 1;
     config.quizVersion = newVersion;
     console.log(`📌 New quiz version: ${newVersion}`);
 
+    // 4. Reset the counter for the new version
     await Counter.findOneAndUpdate(
       { _id: `regNo_${newVersion}` },
       { $set: { seq: 0 } },
@@ -929,49 +977,38 @@ app.post("/admin/reset-exam", async (req, res) => {
     );
     console.log(`📊 Counter for version ${newVersion} reset to 0.`);
 
+    // 5. Update config (start time, duration, etc.)
     const now = new Date();
     const newStart = new Date(now.getTime() + 5 * 60000);
     config.startTime = newStart;
     config.ranksFinalised = false;
-    config.durationMinutes = 25;
+    config.durationMinutes = 30;
     config.positiveMarks = 1;
-    config.negativeMarks = 1;
+    config.negativeMarks = 0;
 
     if (req.body?.quizName) {
       config.quizName = req.body.quizName;
     }
     await config.save();
 
+    // 6. Rebuild CSVs (empty)
     await rebuildCsv(config.quizName);
     await rebuildRegistrationCsv(config.quizName);
 
+    // 7. Restart watcher
     startRankWatcher();
 
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const safeName = oldQuizName.replace(/[^a-zA-Z0-9-_]/g, '_');
-    const zipName = `backup_${safeName}_${timestamp}.zip`;
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
-    archive.pipe(res);
-
-    archive.append(resultsCsv, { name: 'results.csv' });
-    archive.append(registrationsCsv, { name: 'registrations.csv' });
-    archive.append(questionsCsv, { name: 'questions.csv' });
-
-    await archive.finalize();
-
+    res.json({
+      success: true,
+      message: `Exam reset. New version: ${newVersion}. New start time: ${newStart.toISOString()}`,
+      startTime: newStart,
+      quizVersion: newVersion,
+    });
   } catch (err) {
     console.error("❌ Reset exam error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: err.message });
-    } else {
-      res.end();
-    }
+    res.status(500).json({ success: false, message: err.message });
   }
 });
-
 // ---------- Publish all questions ----------
 app.post("/admin/publish-questions", async (req, res) => {
   try {
@@ -1009,7 +1046,7 @@ app.post("/admin/publish-questions", async (req, res) => {
 app.get("/admin/disqualified-csv", async (req, res) => {
   try {
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
 
     const disqualifiedAttempts = await QuizAttempt.find({
       quizName,
@@ -1125,7 +1162,7 @@ app.post("/finalize-quiz", async (req, res) => {
   try {
     const now = new Date();
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
     const overdue = await QuizAttempt.find({ submitted: false, startTime: { $exists: true }, quizName });
     for (let a of overdue) {
       const end = new Date(a.startTime.getTime() + a.durationMinutes * 60000);
@@ -1150,7 +1187,7 @@ app.post("/finalize-quiz", async (req, res) => {
 app.get("/results-csv", async (req, res) => {
   try {
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
     const filePath = getCsvPath(quizName);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ success: false, message: "No results yet for this quiz" });
@@ -1166,7 +1203,7 @@ app.get("/results-csv", async (req, res) => {
 app.get("/registrations-csv", async (req, res) => {
   try {
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
     const filePath = getRegistrationCsvPath(quizName);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ success: false, message: "No registrations yet for this quiz" });
@@ -1194,7 +1231,7 @@ app.get("/available-results", async (req, res) => {
 app.delete("/admin/clear-csv", async (req, res) => {
   try {
     const config = await getExamConfig();
-    const quizName = config.quizName || "National Science and Technology Digital Archive (NSTAD) Online Quiz";
+    const quizName = config.quizName || "Trivia Quiz";
     deleteCsvByQuizName(quizName);
     const regCsv = getRegistrationCsvPath(quizName);
     if (fs.existsSync(regCsv)) fs.unlinkSync(regCsv);
