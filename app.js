@@ -1,4 +1,4 @@
-  require("dotenv").config();
+ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -7,7 +7,6 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 const { createObjectCsvWriter } = require("csv-writer");
-
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -100,14 +99,12 @@ const archivedAttemptSchema = new mongoose.Schema({
 });
 const ArchivedQuizAttempt = mongoose.model("ArchivedQuizAttempt", archivedAttemptSchema);
 
-// ---- ExamConfig – only for extra custom fields ----
 const examConfigSchema = new mongoose.Schema({
   quizName: { type: String, default: "Trivia Quiz" },
   startTime: { type: Date, required: true },
   durationMinutes: { type: Number, required: true, default: 30 },
   positiveMarks: { type: Number, default: 1 },
   negativeMarks: { type: Number, default: 0 },
-  // Only extra fields (name and email are hardcoded)
   registrationFields: {
     type: Map,
     of: new mongoose.Schema({
@@ -161,7 +158,6 @@ async function generateRegNo() {
   return `TRV-${String(counter.seq).padStart(4, '0')}-${version}`;
 }
 
-// ---------- CSV helpers ----------
 function getCsvPath(quizName) {
   const sanitized = quizName.replace(/[^a-zA-Z0-9-_]/g, "_");
   return path.join(resultsDir, `results_${sanitized}.csv`);
@@ -288,7 +284,6 @@ async function rebuildRegistrationCsv(quizName) {
     const data = getCustomDataMap(s.customData);
     data.forEach((_, key) => allCustomKeys.add(key));
   });
-  // Ensure 'name' and 'email' are included in the header even if not in the first student (they should be)
   allCustomKeys.add('name');
   allCustomKeys.add('email');
   const sortedKeys = Array.from(allCustomKeys).sort();
@@ -359,7 +354,6 @@ async function finalizeRanks() {
   }
 }
 
-// ---------- Watcher ----------
 let watcherInterval = null;
 function startRankWatcher() {
   if (watcherInterval) clearInterval(watcherInterval);
@@ -410,15 +404,18 @@ app.get("/admin/config", async (req, res) => {
   }
 });
 
+// ---------- UPDATED: /admin/config (with isQuizNameChanged) ----------
 app.post("/admin/config", async (req, res) => {
   try {
-    const { startTime, durationMinutes, positiveMarks, negativeMarks, registrationFields, quizName } = req.body;
+    const { startTime, durationMinutes, positiveMarks, negativeMarks, registrationFields, quizName, isQuizNameChanged } = req.body;
     if (!startTime || durationMinutes == null || positiveMarks == null || negativeMarks == null)
       return res.status(400).json({ success: false, message: "Missing required fields" });
 
-    // Delete all questions when config is saved
-    await Question.deleteMany({});
-    console.log("🧹 All questions deleted due to config update.");
+    // 🟢 DELETE QUESTIONS ONLY IF QUIZ NAME CHANGED
+    if (isQuizNameChanged) {
+      await Question.deleteMany({});
+      console.log("🧹 All questions deleted because quiz name changed.");
+    }
 
     let config = await ExamConfig.findOne();
     if (!config) config = new ExamConfig();
@@ -430,11 +427,10 @@ app.post("/admin/config", async (req, res) => {
     config.negativeMarks = parseFloat(negativeMarks);
     config.ranksFinalised = false;
 
-    // Only extra fields; name and email are hardcoded and NOT stored in registrationFields
+    // Process extra fields (name & email are hardcoded, ignored here)
     const map = new Map();
     if (registrationFields) {
       for (const [key, value] of Object.entries(registrationFields)) {
-        // Skip if someone tries to pass 'name' or 'email' – they are ignored
         if (key === 'name' || key === 'email') continue;
         map.set(key, {
           enabled: value.enabled ?? true,
@@ -472,8 +468,7 @@ app.get("/registration-config", async (req, res) => {
 });
 
 // ---------- Register student (hardcoded name & email) ----------
- // ---------- Register student (hardcoded name & email) ----------
- app.post("/register", async (req, res) => {
+app.post("/register", async (req, res) => {
   try {
     const config = await getExamConfig();
     const extraFields = config.registrationFields ? Object.fromEntries(config.registrationFields) : {};
@@ -517,41 +512,33 @@ app.get("/registration-config", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
     doc.pipe(res);
 
-    // ---- Background image (if exists) ----
     const bgPath = path.join(__dirname, "assets", "image.png");
     if (fs.existsSync(bgPath)) {
       doc.image(bgPath, 0, 0, { width: doc.page.width, height: doc.page.height });
     } else {
-      // Fallback: subtle gradient
       doc.rect(0, 0, doc.page.width, doc.page.height).fill("#f8f9fa");
     }
 
-    // ---- Main content (centered) ----
     const pageWidth = doc.page.width;
     const centerX = pageWidth / 2;
 
-    // --- Quiz Name ---
     doc.fontSize(28)
        .fillColor("#1a237e")
        .font("Helvetica-Bold")
        .text(quizName, centerX, 80, { align: "center" })
        .moveDown(0.5);
 
-    // --- Subtitle ---
     doc.fontSize(18)
        .fillColor("#303f9f")
        .font("Helvetica")
        .text("Registration Confirmation", centerX, 130, { align: "center" })
        .moveDown(1);
 
-    // --- Registration Card ---
     const cardX = 80;
     const cardY = 180;
     const cardWidth = pageWidth - 160;
-    // Increase card height slightly to accommodate more fields
     const cardHeight = 280;
 
-    // White background with rounded corners
     doc.fillColor("#ffffff")
        .fillOpacity(0.85)
        .rect(cardX, cardY, cardWidth, cardHeight)
@@ -562,7 +549,6 @@ app.get("/registration-config", async (req, res) => {
        .rect(cardX, cardY, cardWidth, cardHeight)
        .stroke();
 
-    // --- Card Content ---
     let yPos = cardY + 30;
     const leftCol = cardX + 30;
     const rightCol = cardX + 200;
@@ -589,7 +575,6 @@ app.get("/registration-config", async (req, res) => {
     doc.text(email, rightCol, yPos);
     yPos += 30;
 
-    // Custom fields (extra)
     for (const [fieldName, settings] of Object.entries(extraFields)) {
       if (!settings.enabled) continue;
       const value = customData.get(fieldName) || "";
@@ -603,7 +588,6 @@ app.get("/registration-config", async (req, res) => {
       }
     }
 
-    // --- Quiz Start Time ---
     const startIST = config.startTime.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
     doc.font("Helvetica-Bold").fillColor(labelColor);
     doc.text("Quiz Date & Time (IST):", leftCol, yPos);
@@ -611,22 +595,18 @@ app.get("/registration-config", async (req, res) => {
     doc.text(startIST, rightCol, yPos);
     yPos += 30;
 
-    // ---------- NEW: Login Credentials (centered) ----------
     const noteY = cardY + cardHeight + 20;
-    // Draw a subtle line
     doc.strokeColor("#b0bec5")
        .lineWidth(1)
        .moveTo(80, noteY - 5)
        .lineTo(pageWidth - 80, noteY - 5)
        .stroke();
 
-    // Title
     doc.fontSize(16)
        .fillColor("#1a237e")
        .font("Helvetica-Bold")
        .text(" Login Credentials", centerX, noteY , { align: "center" });
 
-    // Message
     doc.fontSize(13)
        .fillColor("#37474f")
        .font("Helvetica")
@@ -637,7 +617,6 @@ app.get("/registration-config", async (req, res) => {
          { align: "center", width: pageWidth - 120 }
        );
 
-    // ---------- Important Rules (shifted down) ----------
     const rulesY = noteY + 90;
     doc.fontSize(16)
        .fillColor("#1a237e")
@@ -669,7 +648,6 @@ app.get("/registration-config", async (req, res) => {
       doc.text(`• ${rule}`, bulletX, y, { width: pageWidth - 140 });
     });
 
-    // ---- Footer ----
     const footerY = doc.page.height - 40;
     doc.fontSize(10)
        .fillColor("#78909c")
@@ -682,6 +660,7 @@ app.get("/registration-config", async (req, res) => {
     res.status(500).json({ success: false, message: "Registration failed" });
   }
 });
+
 // ---------- Download questions CSV ----------
 app.get("/questions-csv", async (req, res) => {
   try {
@@ -723,7 +702,6 @@ app.get("/questions-csv", async (req, res) => {
     const downloadName = `questions_${new Date().toISOString().slice(0,10)}.csv`;
     res.download(csvPath, downloadName, (err) => {
       if (err) console.error("Download error:", err);
-      // Clean up the temporary file after download
       fs.unlink(csvPath, (unlinkErr) => {
         if (unlinkErr) console.error("Failed to delete temp CSV:", unlinkErr);
       });
@@ -734,7 +712,6 @@ app.get("/questions-csv", async (req, res) => {
   }
 });
 
-// ---------- Login ----------
 // ---------- Login (email only) ----------
 app.post("/login", async (req, res) => {
   try {
@@ -748,13 +725,11 @@ app.post("/login", async (req, res) => {
       return res.status(404).json({ success: false, message: "Invalid registration number." });
     }
 
-    // Verify email (case‑insensitive)
     const storedEmail = student.customData.get('email');
     if (!storedEmail || storedEmail.toLowerCase() !== email.toLowerCase()) {
       return res.status(401).json({ success: false, message: "Email does not match our records." });
     }
 
-    // Check if already submitted
     const existing = await QuizAttempt.findOne({ studentRegNo: regNo, submitted: true });
     if (existing) {
       return res.status(403).json({ success: false, message: "You have already submitted the quiz." });
@@ -938,35 +913,21 @@ app.post("/admin/archive-and-clear", async (req, res) => {
     res.status(500).json({ success: false, message: "Archive failed." });
   }
 });
-// POST /admin/reset-config
+
+// POST /admin/reset-config (only local clear, no backend effect)
 app.post('/admin/reset-config', async (req, res) => {
   try {
-    // Reset config file to blank/default values
-    const defaultConfig = {
-      startTime: null,
-      durationMinutes: 0,
-      positiveMarks: 0,
-      negativeMarks: 0,
-      quizName: '',
-      registrationFields: {},
-      // ... any other fields
-    };
-    // Write defaultConfig to your config file (e.g., config.json)
-    await fs.writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
-
-    // Optionally clear CSV and reset ranks (true blank slate)
-    await clearCsvFile();    // delete results.csv, registrations.csv, etc.
-    await resetRanks();      // if you have a ranks file
-
-    res.json({ success: true, message: 'Configuration reset to blank.' });
+    // This endpoint is kept for compatibility but does nothing on server.
+    // The frontend will reset its local state only.
+    res.json({ success: true, message: 'Config reset locally.' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 // ---------- Reset exam (with versioning) ----------
 app.post("/admin/reset-exam", async (req, res) => {
   try {
-    // 1. Get or create config – if it fails, create a default one
     let config = await ExamConfig.findOne();
     if (!config) {
       console.log("⚠️ No config found – creating a default one.");
@@ -985,17 +946,14 @@ app.post("/admin/reset-exam", async (req, res) => {
     const oldQuizName = config.quizName || "Trivia Quiz";
     console.log(`🔄 Resetting exam for quiz: "${oldQuizName}"`);
 
-    // 2. Delete all students and attempts for this quiz
     const studentDeleteResult = await Student.deleteMany({ quizName: oldQuizName });
     const attemptDeleteResult = await QuizAttempt.deleteMany({ quizName: oldQuizName });
     console.log(`🗑️ Deleted ${studentDeleteResult.deletedCount} students and ${attemptDeleteResult.deletedCount} attempts.`);
 
-    // 3. Increment quiz version
     const newVersion = (config.quizVersion || 1) + 1;
     config.quizVersion = newVersion;
     console.log(`📌 New quiz version: ${newVersion}`);
 
-    // 4. Reset the counter for the new version
     await Counter.findOneAndUpdate(
       { _id: `regNo_${newVersion}` },
       { $set: { seq: 0 } },
@@ -1003,7 +961,6 @@ app.post("/admin/reset-exam", async (req, res) => {
     );
     console.log(`📊 Counter for version ${newVersion} reset to 0.`);
 
-    // 5. Update config (start time, duration, etc.)
     const now = new Date();
     const newStart = new Date(now.getTime() + 5 * 60000);
     config.startTime = newStart;
@@ -1017,11 +974,9 @@ app.post("/admin/reset-exam", async (req, res) => {
     }
     await config.save();
 
-    // 6. Rebuild CSVs (empty)
     await rebuildCsv(config.quizName);
     await rebuildRegistrationCsv(config.quizName);
 
-    // 7. Restart watcher
     startRankWatcher();
 
     res.json({
@@ -1035,6 +990,7 @@ app.post("/admin/reset-exam", async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 // ---------- Publish all questions ----------
 app.post("/admin/publish-questions", async (req, res) => {
   try {
