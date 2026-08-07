@@ -1,4 +1,4 @@
-  require("dotenv").config();
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -194,69 +194,119 @@ function getCustomDataMap(customData) {
   return new Map();
 }
 
+// FIXED: Rebuild CSV with proper rank calculation
 async function rebuildCsv(quizName) {
-  const attempts = await QuizAttempt.find({
-    submitted: true,
-    quizName: quizName,
-  }).sort({ rank: 1 }).lean();
+  try {
+    console.log(`🔄 Rebuilding CSV for quiz: "${quizName}"`);
+    
+    // Get all submitted attempts for this quiz
+    const attempts = await QuizAttempt.find({
+      submitted: true,
+      quizName: quizName,
+    }).sort({ rank: 1 }).lean();
 
-  const regNos = attempts.map(a => a.studentRegNo);
-  const students = await Student.find({ regNo: { $in: regNos } }).lean();
-  const studentMap = {};
-  students.forEach(s => {
-    studentMap[s.regNo] = getCustomDataObject(s.customData);
-  });
-
-  const allQuestions = await Question.find({ published: true, quizName }).sort({ createdAt: 1 }).lean();
-
-  const records = attempts.map((a) => {
-    const custom = studentMap[a.studentRegNo] || {};
-    const name = custom.name || "";
-    const email = custom.email || "";
-    const correct = a.score || 0;
-    let wrong = 0;
-    if (a.answers) {
-      a.answers.forEach((ans, idx) => {
-        if (idx < allQuestions.length && ans !== null && ans !== allQuestions[idx].correctAnswer) {
-          wrong++;
-        }
+    if (attempts.length === 0) {
+      console.log(`ℹ️ No submitted attempts found for "${quizName}"`);
+      // Create empty CSV
+      const csvPath = getCsvPath(quizName);
+      const writer = createObjectCsvWriter({
+        path: csvPath,
+        header: [
+          { id: "regNo", title: "RegNo" },
+          { id: "name", title: "Name" },
+          { id: "email", title: "Email" },
+          { id: "correctCount", title: "Correct" },
+          { id: "wrongCount", title: "Wrong" },
+          { id: "totalMarksObtained", title: "MarksObtained" },
+          { id: "totalMarks", title: "TotalMarks" },
+          { id: "totalTimeMinutes", title: "TimeMinutes" },
+          { id: "rank", title: "Rank" },
+          { id: "timeOfSubmission", title: "SubmissionTime" },
+          { id: "disqualified", title: "Disqualified" },
+        ],
+        append: false,
       });
+      await writer.writeRecords([]);
+      return;
     }
-    return {
-      regNo: a.studentRegNo,
-      name,
-      email,
-      correctCount: correct,
-      wrongCount: wrong,
-      totalMarksObtained: a.totalMarksObtained,
-      totalMarks: a.totalMarks,
-      totalTimeMinutes: a.totalTimeMinutes,
-      rank: a.rank,
-      timeOfSubmission: a.endTime?.toISOString() || "",
-      disqualified: a.disqualified ? "YES" : "NO",
-    };
-  });
 
-  const csvPath = getCsvPath(quizName);
-  const writer = createObjectCsvWriter({
-    path: csvPath,
-    header: [
-      { id: "regNo", title: "RegNo" },
-      { id: "name", title: "Name" },
-      { id: "email", title: "Email" },
-      { id: "correctCount", title: "Correct" },
-      { id: "wrongCount", title: "Wrong" },
-      { id: "totalMarksObtained", title: "MarksObtained" },
-      { id: "totalMarks", title: "TotalMarks" },
-      { id: "totalTimeMinutes", title: "TimeMinutes" },
-      { id: "rank", title: "Rank" },
-      { id: "timeOfSubmission", title: "SubmissionTime" },
-      { id: "disqualified", title: "Disqualified" },
-    ],
-    append: false,
-  });
-  await writer.writeRecords(records);
-  console.log(`✅ Results CSV rebuilt for quiz "${quizName}" -> ${csvPath}`);
+    // Get student details
+    const regNos = attempts.map(a => a.studentRegNo);
+    const students = await Student.find({ regNo: { $in: regNos } }).lean();
+    const studentMap = {};
+    students.forEach(s => {
+      studentMap[s.regNo] = getCustomDataObject(s.customData);
+    });
+
+    // Get questions to calculate wrong count
+    const allQuestions = await Question.find({ published: true, quizName }).sort({ createdAt: 1 }).lean();
+
+    // Build records with proper rank (use the rank already stored in database)
+    const records = attempts.map((a) => {
+      const custom = studentMap[a.studentRegNo] || {};
+      const name = custom.name || "";
+      const email = custom.email || "";
+      const correct = a.score || 0;
+      
+      // Calculate wrong count
+      let wrong = 0;
+      if (a.answers && allQuestions.length > 0) {
+        a.answers.forEach((ans, idx) => {
+          if (idx < allQuestions.length && ans !== null && ans !== "" && ans !== allQuestions[idx].correctAnswer) {
+            wrong++;
+          }
+        });
+      }
+      
+      return {
+        regNo: a.studentRegNo,
+        name,
+        email,
+        correctCount: correct,
+        wrongCount: wrong,
+        totalMarksObtained: a.totalMarksObtained || 0,
+        totalMarks: a.totalMarks || 0,
+        totalTimeMinutes: a.totalTimeMinutes || 0,
+        rank: a.disqualified ? -1 : (a.rank || null), // Show -1 for disqualified
+        timeOfSubmission: a.endTime?.toISOString() || "",
+        disqualified: a.disqualified ? "YES" : "NO",
+      };
+    });
+
+    // Sort records by rank (non-null ranks first, then disqualified at bottom)
+    records.sort((a, b) => {
+      if (a.disqualified === "YES" && b.disqualified === "NO") return 1;
+      if (a.disqualified === "NO" && b.disqualified === "YES") return -1;
+      if (a.rank === null && b.rank !== null) return 1;
+      if (a.rank !== null && b.rank === null) return -1;
+      if (a.rank !== null && b.rank !== null) return a.rank - b.rank;
+      return 0;
+    });
+
+    const csvPath = getCsvPath(quizName);
+    const writer = createObjectCsvWriter({
+      path: csvPath,
+      header: [
+        { id: "regNo", title: "RegNo" },
+        { id: "name", title: "Name" },
+        { id: "email", title: "Email" },
+        { id: "correctCount", title: "Correct" },
+        { id: "wrongCount", title: "Wrong" },
+        { id: "totalMarksObtained", title: "MarksObtained" },
+        { id: "totalMarks", title: "TotalMarks" },
+        { id: "totalTimeMinutes", title: "TimeMinutes" },
+        { id: "rank", title: "Rank" },
+        { id: "timeOfSubmission", title: "SubmissionTime" },
+        { id: "disqualified", title: "Disqualified" },
+      ],
+      append: false,
+    });
+    await writer.writeRecords(records);
+    console.log(`✅ Results CSV rebuilt for quiz "${quizName}" -> ${csvPath}`);
+  } catch (error) {
+    console.error("❌ Error rebuilding CSV:", error);
+    throw error;
+  }
 }
 
 function getRegistrationCsvPath(quizName) {
@@ -321,68 +371,135 @@ async function rebuildRegistrationCsv(quizName) {
   console.log(`📄 Registration CSV rebuilt for "${quizName}" -> ${csvPath}`);
 }
 
+// FIXED: Proper rank finalization with handling for late submissions
 async function finalizeRanks() {
   try {
     console.log("⏳ Finalising ranks...");
     const config = await getExamConfig();
     const quizName = config.quizName || "Trivia Quiz";
 
-    const attempts = await QuizAttempt.find({ submitted: true, quizName }).lean();
-    const nonDisqualified = attempts
-      .filter(a => !a.disqualified)
+    // Get all submitted attempts
+    const attempts = await QuizAttempt.find({ 
+      submitted: true, 
+      quizName,
+      disqualified: false // Only rank non-disqualified students
+    }).lean();
+
+    if (attempts.length === 0) {
+      console.log(`ℹ️ No attempts to rank for "${quizName}"`);
+      await ExamConfig.updateOne({}, { $set: { ranksFinalised: true } });
+      return;
+    }
+
+    // Sort by marks (descending) and time (ascending)
+    const sorted = attempts
+      .filter(a => a.totalMarksObtained !== null && a.totalMarksObtained !== undefined)
       .sort((a, b) => {
-        if (b.totalMarksObtained !== a.totalMarksObtained) return b.totalMarksObtained - a.totalMarksObtained;
+        // First compare by total marks (higher is better)
+        if (b.totalMarksObtained !== a.totalMarksObtained) {
+          return b.totalMarksObtained - a.totalMarksObtained;
+        }
+        // If marks are equal, compare by time (lower is better)
         return a.totalTimeMinutes - b.totalTimeMinutes;
       });
 
-    let rank = 1;
-    for (let i = 0; i < nonDisqualified.length; i++) {
-      const a = nonDisqualified[i];
+    // Assign ranks with tie handling
+    let currentRank = 1;
+    for (let i = 0; i < sorted.length; i++) {
+      const current = sorted[i];
+      
+      // Check if this is a tie with previous
       if (i > 0) {
-        const prev = nonDisqualified[i - 1];
-        if (a.totalMarksObtained === prev.totalMarksObtained && a.totalTimeMinutes === prev.totalTimeMinutes) {
-          await QuizAttempt.updateOne({ _id: a._id }, { $set: { rank: prev.rank } });
+        const prev = sorted[i - 1];
+        if (current.totalMarksObtained === prev.totalMarksObtained && 
+            current.totalTimeMinutes === prev.totalTimeMinutes) {
+          // Same rank as previous
+          await QuizAttempt.updateOne(
+            { _id: current._id }, 
+            { $set: { rank: prev.rank } }
+          );
           continue;
         }
       }
-      await QuizAttempt.updateOne({ _id: a._id }, { $set: { rank: rank } });
-      rank++;
+      
+      // New rank
+      await QuizAttempt.updateOne(
+        { _id: current._id }, 
+        { $set: { rank: currentRank } }
+      );
+      currentRank++;
     }
-    await QuizAttempt.updateMany({ submitted: true, disqualified: true, quizName }, { $set: { rank: -1 } });
 
-    await rebuildCsv(quizName);
+    // Set rank for disqualified students
+    await QuizAttempt.updateMany(
+      { 
+        submitted: true, 
+        disqualified: true, 
+        quizName 
+      }, 
+      { $set: { rank: -1 } }
+    );
+
+    // Update config
     await ExamConfig.updateOne({}, { $set: { ranksFinalised: true } });
-    console.log(`✅ Ranks finalised. ${nonDisqualified.length} participants ranked.`);
+    
+    // Rebuild CSV with updated ranks
+    await rebuildCsv(quizName);
+    
+    console.log(`✅ Ranks finalised. ${sorted.length} participants ranked.`);
   } catch (err) {
-    console.error("Finalisation error:", err);
+    console.error("❌ Finalisation error:", err);
+    throw err;
   }
 }
 
+// FIXED: Watcher that properly handles rank updates
 let watcherInterval = null;
 function startRankWatcher() {
-  if (watcherInterval) clearInterval(watcherInterval);
+  if (watcherInterval) {
+    clearInterval(watcherInterval);
+    watcherInterval = null;
+  }
+  
   watcherInterval = setInterval(async () => {
     try {
       const config = await getExamConfig();
       const now = Date.now();
       const startTime = config.startTime.getTime();
       const endTime = startTime + config.durationMinutes * 60000;
+      
+      // Reset ranksFinalised if quiz hasn't started
       if (now < startTime && config.ranksFinalised) {
         await ExamConfig.updateOne({}, { $set: { ranksFinalised: false } });
         return;
       }
+      
+      // If ranks are already finalised, check if new submissions came in
       if (config.ranksFinalised) {
-        clearInterval(watcherInterval);
-        watcherInterval = null;
+        // Check if any new submissions happened after ranks were finalised
+        const lastUpdate = config.updatedAt || new Date(0);
+        const newSubmissions = await QuizAttempt.findOne({
+          quizName: config.quizName,
+          submitted: true,
+          endTime: { $gt: lastUpdate }
+        });
+        
+        if (newSubmissions) {
+          console.log("🔄 New submissions detected, recalculating ranks...");
+          await ExamConfig.updateOne({}, { $set: { ranksFinalised: false } });
+          await finalizeRanks();
+        }
         return;
       }
+      
+      // If quiz has ended and ranks not finalised, finalize them
       if (now > endTime) {
         await finalizeRanks();
       }
     } catch (err) {
-      console.error("Watcher error:", err);
+      console.error("❌ Watcher error:", err);
     }
-  }, 30000);
+  }, 30000); // Check every 30 seconds
 }
 
 // ============ ROUTES ============
@@ -424,10 +541,8 @@ app.post("/admin/config", async (req, res) => {
     if (isQuizNameChanged && oldQuizName !== newQuizName) {
       console.log(`🔄 Quiz name changed from "${oldQuizName}" to "${newQuizName}". Archiving attempts...`);
 
-      // Build query to find attempts: match oldQuizName OR (if oldQuizName is default, also match empty/null)
       let query = { submitted: true };
       if (oldQuizName === "Trivia Quiz") {
-        // Also include attempts with missing or empty quizName (legacy)
         query.$or = [
           { quizName: oldQuizName },
           { quizName: { $in: [null, "", undefined] } }
@@ -454,21 +569,18 @@ app.post("/admin/config", async (req, res) => {
           ...a,
           studentName: studentMap[a.studentRegNo]?.name || "",
           studentEmail: studentMap[a.studentRegNo]?.email || "",
-          // Ensure quizName is set to oldQuizName for consistency
           quizName: oldQuizName,
           archivedAt: new Date(),
         }));
         await ArchivedQuizAttempt.insertMany(archivedDocs);
         console.log(`✅ Archived ${archivedDocs.length} attempts for "${oldQuizName}".`);
 
-        // Delete them from QuizAttempt
         await QuizAttempt.deleteMany(query);
         console.log(`🗑️ Removed ${attemptsToArchive.length} attempts from QuizAttempt.`);
       } else {
         console.log(`ℹ️ No attempts to archive for "${oldQuizName}"`);
       }
 
-      // IMPORTANT: Do NOT delete questions or students – they stay with their quizName
       console.log(`🧹 Keeping questions and students for "${oldQuizName}" (they will be accessible later).`);
     }
 
@@ -555,7 +667,7 @@ app.post("/register", async (req, res) => {
 
     await rebuildRegistrationCsv(quizName);
 
-    // PDF generation (unchanged)
+    // PDF generation
     const doc = new PDFDocument({ size: "A4", margin: 50 });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=reg-${regNo}.pdf`);
@@ -867,8 +979,16 @@ app.post("/submit-quiz", async (req, res) => {
       attempt.submitted = true;
       attempt.endTime = now;
       attempt.answers = answers;
+      attempt.rank = -1;
       await attempt.save();
+      
+      // Reset ranks so they get recalculated
+      await ExamConfig.updateOne({}, { $set: { ranksFinalised: false } });
       await rebuildCsv(config.quizName || "Trivia Quiz");
+      
+      // Try to finalize ranks immediately
+      await finalizeRanks();
+      
       return res.json({ success: true, disqualified: true, message: "Time expired. You are disqualified." });
     }
 
@@ -899,9 +1019,15 @@ app.post("/submit-quiz", async (req, res) => {
     attempt.totalMarksObtained = netMarks;
     attempt.totalMarks = maxMarks;
     attempt.submitted = true;
+    attempt.rank = null; // Reset rank so it gets recalculated
     await attempt.save();
 
+    // Reset ranks so they get recalculated
+    await ExamConfig.updateOne({}, { $set: { ranksFinalised: false } });
     await rebuildCsv(config.quizName || "Trivia Quiz");
+    
+    // Try to finalize ranks immediately
+    await finalizeRanks();
 
     res.json({
       success: true,
@@ -974,17 +1100,16 @@ app.post("/admin/archive-and-clear", async (req, res) => {
     res.status(500).json({ success: false, message: "Archive failed." });
   }
 });
+
 app.delete("/admin/archived-quizzes/:quizName", async (req, res) => {
   try {
     const { quizName } = req.params;
 
-    // Remove all archived attempts for this quiz
     const result = await ArchivedQuizAttempt.deleteMany({ quizName });
     if (result.deletedCount === 0) {
       return res.status(404).json({ success: false, message: "No archived attempts found for this quiz." });
     }
 
-    // Delete associated CSV files (archived results, registrations, questions)
     const sanitized = quizName.replace(/[^a-zA-Z0-9-_]/g, "_");
     const patterns = [
       `archived_results_${sanitized}.csv`,
@@ -1011,10 +1136,8 @@ app.delete("/admin/archived-quizzes/:quizName", async (req, res) => {
 
 // ========== ENDPOINTS FOR PAST QUIZZES ==========
 
-// GET /admin/archived-quizzes – now includes quizzes with zero attempts (if they have questions or students)
 app.get("/admin/archived-quizzes", async (req, res) => {
   try {
-    // 1. Archived attempts (group by quizName)
     const archivedAttemptsAgg = await ArchivedQuizAttempt.aggregate([
       {
         $group: {
@@ -1037,7 +1160,6 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       },
     ]);
 
-    // 2. Questions – only needed if we want to show counts, but we'll filter by attemptsCount > 0
     const questionAgg = await Question.aggregate([
       {
         $group: {
@@ -1060,7 +1182,6 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       },
     ]);
 
-    // 3. Students – also only for display, but we filter later
     const studentAgg = await Student.aggregate([
       {
         $group: {
@@ -1083,10 +1204,8 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       },
     ]);
 
-    // Merge all results into a map
     const quizMap = new Map();
 
-    // Only start with quizzes that have archived attempts
     archivedAttemptsAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       quizMap.set(key, {
@@ -1100,16 +1219,13 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       });
     });
 
-    // Add question counts (only if the quiz already exists in map – i.e., has attempts)
     questionAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       if (quizMap.has(key)) {
         quizMap.get(key).questionsCount = item.questionsCount;
       }
-      // If quiz not in map, we ignore it – no attempts, so skip
     });
 
-    // Add student counts (same)
     studentAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       if (quizMap.has(key)) {
@@ -1117,10 +1233,8 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       }
     });
 
-    // Convert to array and sort
     const quizzes = Array.from(quizMap.values())
       .filter(q => q.quizName && q.quizName.trim() !== "")
-      // Ensure we only return quizzes with at least one archived attempt
       .filter(q => q.attemptsCount > 0)
       .sort((a, b) => {
         if (a.startTime && b.startTime) return new Date(b.startTime) - new Date(a.startTime);
@@ -1135,7 +1249,7 @@ app.get("/admin/archived-quizzes", async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
-// Download CSV for a past quiz (results, registrations, questions)
+
 app.get("/admin/archived-csv/:quizName", async (req, res) => {
   try {
     const { quizName } = req.params;
@@ -1199,15 +1313,65 @@ app.get("/admin/archived-registrations-csv/:quizName", async (req, res) => {
       query = { $or: [{ quizName: quizName }, { quizName: { $in: [null, "", undefined] } }] };
     }
     const students = await Student.find(query).sort({ registeredAt: 1 }).lean();
-    // ... rest of the code unchanged
-  } catch (err) { /* ... */ }
+    
+    if (!students.length) {
+      return res.status(404).json({ success: false, message: "No registrations found for this quiz." });
+    }
+
+    const allCustomKeys = new Set();
+    students.forEach(s => {
+      const data = getCustomDataMap(s.customData);
+      data.forEach((_, key) => allCustomKeys.add(key));
+    });
+    allCustomKeys.add('name');
+    allCustomKeys.add('email');
+    const sortedKeys = Array.from(allCustomKeys).sort();
+
+    const header = [
+      { id: "regNo", title: "RegNo" },
+      { id: "registeredAt", title: "Registration Time" },
+    ];
+    sortedKeys.forEach(key => {
+      header.push({ id: key, title: key.charAt(0).toUpperCase() + key.slice(1) });
+    });
+
+    const records = students.map(s => {
+      const data = getCustomDataMap(s.customData);
+      const record = {
+        regNo: s.regNo,
+        registeredAt: s.registeredAt.toISOString(),
+      };
+      sortedKeys.forEach(key => {
+        record[key] = data.get(key) || "";
+      });
+      return record;
+    });
+
+    const csvPath = path.join(resultsDir, `archived_registrations_${quizName.replace(/[^a-zA-Z0-9-_]/g, "_")}.csv`);
+    const writer = createObjectCsvWriter({
+      path: csvPath,
+      header,
+      append: false,
+    });
+    await writer.writeRecords(records);
+
+    const downloadName = `archived_registrations_${quizName.replace(/[^a-zA-Z0-9-_]/g, "_")}.csv`;
+    res.download(csvPath, downloadName, (err) => {
+      if (err) console.error("Download error:", err);
+      fs.unlink(csvPath, (unlinkErr) => {
+        if (unlinkErr) console.error("Failed to delete temp CSV:", unlinkErr);
+      });
+    });
+  } catch (err) {
+    console.error("Archived registrations CSV error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
- app.get("/admin/archived-questions-csv/:quizName", async (req, res) => {
+app.get("/admin/archived-questions-csv/:quizName", async (req, res) => {
   try {
     const { quizName } = req.params;
     let query = { quizName: quizName };
-    // If the requested quiz name is "Trivia Quiz" (or default), also include questions with missing quizName
     if (quizName === "Trivia Quiz") {
       query = { $or: [{ quizName: quizName }, { quizName: { $in: [null, "", undefined] } }] };
     }
@@ -1258,6 +1422,7 @@ app.get("/admin/archived-registrations-csv/:quizName", async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 // ---------- Reset config (local only) ----------
 app.post('/admin/reset-config', async (req, res) => {
   res.json({ success: true, message: 'Config reset locally.' });
@@ -1284,7 +1449,6 @@ app.post("/admin/reset-exam", async (req, res) => {
     const oldQuizName = config.quizName || "Trivia Quiz";
     console.log(`🔄 Resetting exam for quiz: "${oldQuizName}"`);
 
-    // Auto-archive submitted attempts (same logic as in config)
     let query = { submitted: true };
     if (oldQuizName === "Trivia Quiz") {
       query.$or = [
@@ -1317,9 +1481,7 @@ app.post("/admin/reset-exam", async (req, res) => {
       await QuizAttempt.deleteMany(query);
     }
 
-    // Delete students only (since they are tied to the old quiz)
     await Student.deleteMany({ quizName: oldQuizName });
-    // Keep questions – they are associated with old quizName
 
     const newVersion = (config.quizVersion || 1) + 1;
     config.quizVersion = newVersion;
@@ -1507,6 +1669,8 @@ app.post("/finalize-quiz", async (req, res) => {
     const config = await getExamConfig();
     const quizName = config.quizName || "Trivia Quiz";
     const overdue = await QuizAttempt.find({ submitted: false, startTime: { $exists: true }, quizName });
+    let finalized = 0;
+    
     for (let a of overdue) {
       const end = new Date(a.startTime.getTime() + a.durationMinutes * 60000);
       if (now > end) {
@@ -1516,12 +1680,21 @@ app.post("/finalize-quiz", async (req, res) => {
         a.totalTimeMinutes = Math.round(((end - a.startTime) / 60000) * 100) / 100;
         a.submitted = true;
         a.endTime = end;
+        a.rank = -1;
         await a.save();
+        finalized++;
       }
     }
-    await rebuildCsv(quizName);
-    res.json({ success: true, message: "Overdue attempts finalized" });
+    
+    if (finalized > 0) {
+      await ExamConfig.updateOne({}, { $set: { ranksFinalised: false } });
+      await rebuildCsv(quizName);
+      await finalizeRanks();
+    }
+    
+    res.json({ success: true, message: `${finalized} overdue attempts finalized` });
   } catch (err) {
+    console.error("Finalization error:", err);
     res.status(500).json({ success: false, message: "Finalization failed" });
   }
 });
