@@ -974,6 +974,40 @@ app.post("/admin/archive-and-clear", async (req, res) => {
     res.status(500).json({ success: false, message: "Archive failed." });
   }
 });
+app.delete("/admin/archived-quizzes/:quizName", async (req, res) => {
+  try {
+    const { quizName } = req.params;
+
+    // Remove all archived attempts for this quiz
+    const result = await ArchivedQuizAttempt.deleteMany({ quizName });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "No archived attempts found for this quiz." });
+    }
+
+    // Delete associated CSV files (archived results, registrations, questions)
+    const sanitized = quizName.replace(/[^a-zA-Z0-9-_]/g, "_");
+    const patterns = [
+      `archived_results_${sanitized}.csv`,
+      `archived_registrations_${sanitized}.csv`,
+      `archived_questions_${sanitized}.csv`
+    ];
+    patterns.forEach(file => {
+      const filePath = path.join(resultsDir, file);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`🗑️ Deleted archived CSV: ${filePath}`);
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: `Deleted archived quiz "${quizName}" (${result.deletedCount} attempts).` 
+    });
+  } catch (err) {
+    console.error("Delete archived quiz error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // ========== ENDPOINTS FOR PAST QUIZZES ==========
 
@@ -1003,7 +1037,7 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       },
     ]);
 
-    // 2. Questions: group by quizName, but treat empty/null as "Trivia Quiz"
+    // 2. Questions – only needed if we want to show counts, but we'll filter by attemptsCount > 0
     const questionAgg = await Question.aggregate([
       {
         $group: {
@@ -1026,7 +1060,7 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       },
     ]);
 
-    // 3. Students: group by quizName, also treat empty/null as "Trivia Quiz"
+    // 3. Students – also only for display, but we filter later
     const studentAgg = await Student.aggregate([
       {
         $group: {
@@ -1052,7 +1086,7 @@ app.get("/admin/archived-quizzes", async (req, res) => {
     // Merge all results into a map
     const quizMap = new Map();
 
-    // Add archived attempts data
+    // Only start with quizzes that have archived attempts
     archivedAttemptsAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       quizMap.set(key, {
@@ -1066,47 +1100,29 @@ app.get("/admin/archived-quizzes", async (req, res) => {
       });
     });
 
-    // Add question counts
+    // Add question counts (only if the quiz already exists in map – i.e., has attempts)
     questionAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       if (quizMap.has(key)) {
         quizMap.get(key).questionsCount = item.questionsCount;
-      } else {
-        quizMap.set(key, {
-          quizName: key,
-          startTime: null,
-          endTime: null,
-          durationMinutes: 0,
-          attemptsCount: 0,
-          questionsCount: item.questionsCount,
-          studentsCount: 0,
-        });
       }
+      // If quiz not in map, we ignore it – no attempts, so skip
     });
 
-    // Add student counts
+    // Add student counts (same)
     studentAgg.forEach(item => {
       const key = item.quizName || "Trivia Quiz";
       if (quizMap.has(key)) {
         quizMap.get(key).studentsCount = item.studentsCount;
-      } else {
-        quizMap.set(key, {
-          quizName: key,
-          startTime: null,
-          endTime: null,
-          durationMinutes: 0,
-          attemptsCount: 0,
-          questionsCount: 0,
-          studentsCount: item.studentsCount,
-        });
       }
     });
 
-    // Convert map to array, filter out truly empty names
+    // Convert to array and sort
     const quizzes = Array.from(quizMap.values())
       .filter(q => q.quizName && q.quizName.trim() !== "")
+      // Ensure we only return quizzes with at least one archived attempt
+      .filter(q => q.attemptsCount > 0)
       .sort((a, b) => {
-        // Sort by startTime (most recent first), if available
         if (a.startTime && b.startTime) return new Date(b.startTime) - new Date(a.startTime);
         if (a.startTime) return -1;
         if (b.startTime) return 1;
@@ -1119,7 +1135,6 @@ app.get("/admin/archived-quizzes", async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
-
 // Download CSV for a past quiz (results, registrations, questions)
 app.get("/admin/archived-csv/:quizName", async (req, res) => {
   try {
