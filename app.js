@@ -962,7 +962,7 @@ app.post("/start-quiz", async (req, res) => {
 
 app.post("/submit-quiz", async (req, res) => {
   try {
-    const { regNo, answers } = req.body;
+    const { regNo, answers, auto } = req.body; // 👈 accept 'auto' flag
     if (!regNo || !answers) return res.status(400).json({ success: false, message: "Missing data" });
 
     const now = new Date();
@@ -971,7 +971,18 @@ app.post("/submit-quiz", async (req, res) => {
     if (!attempt) return res.status(404).json({ success: false, message: "No active quiz session" });
 
     const studentEnd = new Date(attempt.startTime.getTime() + attempt.durationMinutes * 60000);
-    if (now > studentEnd) {
+
+    // Determine disqualification based on auto flag
+    let disqualified = false;
+    if (auto) {
+      // Auto-submit: disqualify if at or after end time
+      disqualified = now >= studentEnd;
+    } else {
+      // Manual submit: disqualify only if strictly after end time (allows last-second click)
+      disqualified = now > studentEnd;
+    }
+
+    if (disqualified) {
       attempt.disqualified = true;
       attempt.score = -1;
       attempt.totalMarksObtained = -1;
@@ -983,10 +994,11 @@ app.post("/submit-quiz", async (req, res) => {
       await attempt.save();
       await ExamConfig.updateOne({}, { $set: { ranksFinalised: false, archived: false } });
       await rebuildCsv(config.quizName || "Trivia Quiz");
-      await finalizeRanks(); // will disqualify and re-rank
+      await finalizeRanks();
       return res.json({ success: true, disqualified: true, message: "Time expired. You are disqualified." });
     }
 
+    // ---------- Normal scoring (unchanged from your original) ----------
     const questions = await Question.find({ published: true, quizName: config.quizName }).sort({ createdAt: 1 });
     const totalQ = questions.length;
     while (answers.length < totalQ) answers.push(null);
